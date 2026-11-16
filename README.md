@@ -13,6 +13,17 @@ App de grupos estilo Discord, para **PC e celular**:
 - Transmissão com escolha de **resolução (480p, 720p, 1080p, 1440p)** e **FPS (60, 30, 15)**
 - Instalável como aplicativo (PWA) no PC e no celular, com botão "Instalar" dentro do app
 
+## 🤖 App para Android (APK)
+O arquivo `public/nexo.apk` é o app Android. Depois de publicar, ele fica disponível em
+`https://SEU-LINK.onrender.com/nexo.apk`. Abra esse endereço no celular, baixe e instale
+(o Android pede para permitir a instalação de "fontes desconhecidas").
+
+- O app permite **transmitir a tela do celular** (o navegador não permite).
+- O app carrega o site, então **atualiza sozinho** a cada abertura. Só é preciso baixar um
+  APK novo quando a parte nativa mudar; nesse caso o próprio app avisa.
+- O áudio dos jogos/apps do celular não é transmitido, só a imagem (e o seu microfone).
+- iPhone não aceita APK; nele o Nexo funciona pelo Safari, sem transmitir a tela.
+
 ## 🔄 Como atualizar o app que já está no ar
 1. Abra o seu repositório no GitHub.
 2. Clique em **Add file** e depois em **Upload files**.

@@ -813,7 +813,10 @@ const call = {
   pinned: null, wakeLock: null, joining: false,
 };
 const hasMedia = () => !!navigator.mediaDevices?.getUserMedia;
-const canShareScreen = () => !!navigator.mediaDevices?.getDisplayMedia;
+const NATIVE = window.NexoNative || null;   // existe quando roda dentro do app Android (APK)
+const APK_LATEST = 1;                         // aumente quando publicar um APK novo
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
+const canShareScreen = () => !!NATIVE || !!navigator.mediaDevices?.getDisplayMedia;
 const localTracks = () => [call.micTrack, call.camTrack, call.screenTrack, call.screenAudioTrack];
 
 async function joinCall(cid) {
@@ -849,6 +852,7 @@ async function joinCall(cid) {
   if (call.micTrack) attachMeter('me', call.micTrack);
   startMeterLoop();
   requestWakeLock();
+  try { NATIVE?.setInCall(true); } catch {}
   setView('voice');
   renderControls();
   renderCallbar();
@@ -860,6 +864,8 @@ async function joinCall(cid) {
 function leaveCall() {
   if (!call.channelId) return;
   S.socket?.emit('voice:leave');
+  endNativeCapture();
+  try { NATIVE?.setInCall(false); } catch {}
   for (const sid of [...call.peers.keys()]) removePeer(sid);
   stopLocalTracks();
   call.meters.clear();
@@ -1106,8 +1112,10 @@ async function flipCamera() {
 
 async function toggleScreen() {
   if (call.screenTrack) return stopScreen();
+  if (NATIVE) return startNativeScreen();
   if (!canShareScreen()) {
-    toast('Navegadores de celular não permitem transmitir a tela. Transmita pelo PC — no celular você assiste em Full HD normalmente.', 6000);
+    if (IS_ANDROID) apkModal('Para transmitir a tela do celular, instale o app Nexo para Android. O navegador não permite capturar a tela.');
+    else toast('O iPhone não permite transmitir a tela por aqui. Transmita pelo PC ou por um Android com o app — no iPhone você assiste normalmente.', 7000);
     return;
   }
   const q = curQ();
@@ -1137,8 +1145,67 @@ async function toggleScreen() {
   toast(`Transmitindo em ${q.label}${call.screenAudioTrack ? ' com áudio' : ''}`);
 }
 
+// ---------- Transmissao de tela pelo app Android ----------
+// O app captura a tela e entrega os quadros em JPEG; aqui eles sao desenhados
+// em um canvas, e o canvas vira a faixa de video enviada na chamada.
+let nativeCap = null;
+function apkModal(text) {
+  modal(`<h3>App Nexo para Android</h3><p class="muted" style="margin:0">${esc(text)}</p>
+    <p class="muted" style="margin:0;font-size:13px">Ao abrir o arquivo, o Android pede para permitir a instalação "de fontes desconhecidas". Permita e toque em Instalar.</p>
+    <div class="acts"><button class="btn" data-close>Agora não</button><a class="btn primary" href="/nexo.apk" download style="text-decoration:none">Baixar APK</a></div>`);
+}
+function startNativeScreen() {
+  const q = curQ();
+  window.__nexoScreen = ok => {
+    if (ok && call.channelId && !nativeCap) beginNativeCapture();
+    else if (!ok) { if (call.screenTrack) stopScreen(); else toast('Transmissão cancelada.'); }
+  };
+  NATIVE.startScreen(q.w, Math.min(q.fps, 30));
+}
+function beginNativeCapture() {
+  const q = curQ(), fps = Math.min(q.fps, 30);
+  const cv = document.createElement('canvas');
+  cv.width = 720; cv.height = 1280;
+  const cx = cv.getContext('2d');
+  cx.fillRect(0, 0, cv.width, cv.height);
+  const img = new Image();
+  let last = 0, busy = false;
+  img.onload = () => {
+    if (cv.width !== img.naturalWidth || cv.height !== img.naturalHeight) { cv.width = img.naturalWidth; cv.height = img.naturalHeight; }
+    cx.drawImage(img, 0, 0);
+    busy = false;
+  };
+  img.onerror = () => { busy = false; };
+  const timer = setInterval(() => {
+    if (busy) return;
+    let r = '';
+    try { r = NATIVE.frame(last); } catch {}
+    if (!r) return;
+    const i = r.indexOf('|');
+    last = Number(r.slice(0, i));
+    busy = true;
+    img.src = 'data:image/jpeg;base64,' + r.slice(i + 1);
+  }, Math.round(1000 / fps));
+  const vt = cv.captureStream(fps).getVideoTracks()[0];
+  try { vt.contentHint = 'detail'; } catch {}
+  nativeCap = { timer };
+  call.screenTrack = vt;
+  call.screenAudioTrack = null;
+  setTrackForAll(2, vt);
+  call.peers.forEach(tunePeerSenders);
+  sendState(); renderControls(); renderLocalTiles();
+  toast('Transmitindo a tela do celular. Pode sair do app: a transmissão continua.', 5000);
+}
+function endNativeCapture() {
+  if (!nativeCap) return;
+  clearInterval(nativeCap.timer);
+  nativeCap = null;
+  try { NATIVE.stopScreen(); } catch {}
+}
+
 function stopScreen() {
   if (!call.screenTrack) return;
+  endNativeCapture();
   call.screenTrack.onended = null;
   call.screenTrack.stop();
   call.screenAudioTrack?.stop();
@@ -1471,5 +1538,20 @@ async function installApp() {
     history.replaceState(null, '', location.pathname);
   }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  // Botao "voltar" do Android: fecha o que estiver aberto antes de minimizar o app
+  window.__nexoBack = () => {
+    if (!ctx.classList.contains('hidden')) { closeCtx(); return true; }
+    if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
+    const app = $('#app');
+    if (app.classList.contains('drawer')) { closeDrawer(); return true; }
+    if (isMobile() && app.classList.contains('show-members')) { setMembers(false); return true; }
+    return false;
+  };
+  // O app Android carrega o site, entao ja abre sempre atualizado.
+  // So avisa quando existe um APK mais novo (mudancas na parte nativa).
+  try {
+    if (NATIVE && NATIVE.version() < APK_LATEST)
+      setTimeout(() => apkModal('Saiu uma versão nova do app Nexo para Android. Baixe e instale por cima da atual.'), 1500);
+  } catch {}
   if (S.token) start(); else showAuth();
 })();
