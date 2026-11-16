@@ -32,7 +32,7 @@ const CH_PERM_INFO = {
 const TEXT_PERMS = ['view', 'sendMessages', 'readHistory', 'attachFiles', 'embedLinks', 'addReactions', 'manageMessages', 'manageChannels'];
 const VOICE_PERMS = ['view', 'connect', 'speak', 'video', 'stream', 'useVAD', 'muteMembers', 'deafenMembers', 'moveMembers', 'disconnectMembers', 'manageChannels'];
 const ALL_CH_PERMS = [...new Set([...TEXT_PERMS, ...VOICE_PERMS])];
-const TEXT_DEF = { maxLen: 2000, slow: 0, edit: true, del: true, replies: true, maxFileMB: 25, newHistory: true, retention: 0 };
+const TEXT_DEF = { maxLen: 2000, slow: 0, edit: true, del: true, replies: true, maxFileMB: 0, newHistory: true, retention: 0 };
 const VOICE_DEF = { limit: 0, locked: false, temp: false, bitrate: 64, ns: '', screenAudio: true };
 const SLOW_OPTS = [0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600];
 const clone = o => JSON.parse(JSON.stringify(o ?? {}));
@@ -327,7 +327,7 @@ function tabBody(g, c, k) {
     ${tgRow('cs-replies', 'Respostas', 'Responder a uma mensagem específica.', d.cfg.replies)}
     ${tgRow('cs-react', 'Reações', 'Reagir às mensagens com emoji.', evOn(g, c, 'addReactions'), np)}
     ${selRow('cs-slow', 'Modo lento', 'Tempo mínimo entre duas mensagens da mesma pessoa. Moderadores não são afetados.', SLOW_OPTS.map(n => [n, n ? fmtSecs(n) : 'Desligado']), d.cfg.slow)}
-    ${selRow('cs-maxmb', 'Tamanho máximo de anexo', 'Cada mensagem leva um arquivo; este é o tamanho máximo dele.', [[25, '25 MB (padrão)'], [10, '10 MB'], [5, '5 MB'], [1, '1 MB']], d.cfg.maxFileMB)}
+    ${selRow('cs-maxmb', 'Tamanho máximo de anexo', 'Vale para fotos, vídeos e arquivos. Não passa do limite do grupo nem do servidor.', [[0, `Seguir o grupo (${Math.round(Math.min(upCfg().maxMB, g.maxUploadMB || Infinity))} MB)`], ...[100, 50, 25, 8, 1].filter(n => n < Math.min(upCfg().maxMB, g.maxUploadMB || Infinity)).map(n => [n, n + ' MB'])], d.cfg.maxFileMB)}
     ${np ? permNote : ''}`;
   if (CH.tab === 'hist') return `<h2>Histórico</h2>
     ${tgRow('cs-hist', 'Ver mensagens anteriores', 'Desligado: as pessoas só veem o que chegar enquanto estiverem com o canal aberto.', evOn(g, c, 'readHistory'), np)}

@@ -45,6 +45,8 @@ const I = {
   download: P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>'),
   x: P('<path d="M18 6 6 18M6 6l12 12"/>'),
   wifiOff: P('<path d="M2 8.8a15 15 0 0 1 4.2-2.7M22 8.8A15 15 0 0 0 10.6 5M5 12.6a10 10 0 0 1 5-2.4M19 12.6a10 10 0 0 0-2-1.3M8.5 16.4a5 5 0 0 1 7 0M12 20h.01M2 2l20 20"/>'),
+  play: P('<path d="M7 4.5v15l13-7.5z" fill="currentColor"/>'),
+  pause: P('<rect x="6" y="5" width="4" height="14" rx="1" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1" fill="currentColor"/>'),
   check: P('<path d="m5 12 5 5L20 7"/>'),
   chev: P('<path d="m6 9 6 6 6-6"/>'),
   gear: P('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.8 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.8H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
@@ -272,6 +274,8 @@ async function start() {
   $('#auth').classList.add('hidden');
   $('#app').classList.remove('hidden');
   setMembers(!isMobile() && store.get('nexo_members') !== '0', true);
+  // cookie protegido com a sessão: é ele que libera fotos e vídeos das conversas para você
+  await fetch('/api/cookie', { method: 'POST', headers: { 'x-token': S.token } }).catch(() => {});
   await loadIce();
   connect();
 }
@@ -1181,7 +1185,7 @@ function attHtml(a) {
     const r = a.w && a.h ? ` style="aspect-ratio:${a.w}/${a.h}"` : '';
     return `<img class="att-img" src="${url}" alt="${esc(a.name)}" data-img="${url}" data-name="${esc(a.name)}" loading="lazy"${r}>`;
   }
-  if (a.mime?.startsWith('video/')) return `<video class="att-img" src="${url}" controls preload="metadata"></video>`;
+  if (a.mime?.startsWith('video/')) return videoAttHtml(a);
   if (a.mime?.startsWith('audio/')) return `<audio src="${url}" controls style="margin-top:6px;max-width:100%"></audio>`;
   return `<a class="att-file" href="${url}" download="${esc(a.name)}" target="_blank" rel="noopener">${I.file}<span class="col"><b>${esc(a.name)}</b><span>${fmtSize(a.size || 0)}</span></span></a>`;
 }
@@ -1414,48 +1418,7 @@ function imageSize(blob) {
     img.src = url;
   });
 }
-async function addAttachments(files) {
-  for (const f of [...files].slice(0, 5)) {
-    if (S.atts.length >= 5) return toast('No máximo 5 arquivos por mensagem.');
-    if (f.size > 8 * 1024 * 1024) { toast(`"${f.name}" passa de 8 MB.`); continue; }
-    const it = { name: f.name || 'arquivo', mime: f.type || 'application/octet-stream', size: f.size, file: f, up: true };
-    if (f.type.startsWith('image/')) it.preview = URL.createObjectURL(f);
-    S.atts.push(it);
-    renderAtts();
-    try {
-      const small = await shrinkImage(f);
-      const blob = small || f;
-      const { w, h } = await imageSize(blob);
-      const r = await fetch('/api/upload', {
-        method: 'POST',
-        headers: { 'x-token': S.token, 'x-name': encodeURIComponent(it.name), 'x-mime': small ? 'image/jpeg' : it.mime },
-        body: blob,
-      });
-      const j = await r.json().catch(() => ({ error: 'Falha no envio.' }));
-      if (!r.ok || !j.att) throw new Error(j.error || 'Falha no envio.');
-      Object.assign(it, { att: { ...j.att, w, h }, up: false, size: j.att.size });
-    } catch (e) {
-      toast(e.message || 'Não consegui enviar o arquivo.');
-      S.atts = S.atts.filter(x => x !== it);
-    }
-    renderAtts();
-  }
-}
-function renderAtts() {
-  const bar = $('#att-bar');
-  bar.classList.toggle('hidden', !S.atts.length);
-  bar.innerHTML = S.atts.map((a, i) => `<div class="att-chip ${a.up ? 'up' : ''}">
-    ${a.preview ? `<img src="${a.preview}" alt="">` : `<span class="i">${I.file}</span>`}
-    <span class="col"><b>${esc(a.name)}</b><span>${a.up ? 'enviando…' : fmtSize(a.size)}</span></span>
-    <button type="button" data-i="${i}" title="Remover">✕</button></div>`).join('');
-  bar.querySelectorAll('[data-i]').forEach(b => b.onclick = () => {
-    const a = S.atts[+b.dataset.i];
-    if (a?.preview) URL.revokeObjectURL(a.preview);
-    S.atts.splice(+b.dataset.i, 1);
-    renderAtts();
-  });
-}
-function clearAtts() { S.atts.forEach(a => a.preview && URL.revokeObjectURL(a.preview)); S.atts = []; renderAtts(); }
+// addAttachments, renderAtts e clearAtts ficam em media.js (envio em partes)
 
 $('#att-btn').innerHTML = I.paperclip;
 $('#att-btn').onclick = () => { if (!input.disabled) $('#att-file').click(); };
@@ -1514,6 +1477,7 @@ async function sendMessage() {
     if (left > 0) return toast(`Modo lento: espere ${left} s.`);
   }
   if (S.atts.some(a => a.up)) return toast('Espere o arquivo terminar de enviar.');
+  if (S.atts.some(a => a.err)) return toast('Um arquivo falhou: tente de novo ou remova antes de mandar.');
   if (!text && !S.atts.length) return;
   const editing = S.editing, replyTo = S.replyTo, atts = S.atts.filter(a => a.att);
   S.editing = null; S.replyTo = null;
@@ -1827,7 +1791,7 @@ function stopLocalTracks() {
 
 // Busca os servidores de conexão (as senhas do TURN vencem; renova a cada 6 h)
 async function loadIce() {
-  try { const j = await (await fetch('/api/config', { cache: 'no-store' })).json(); S.ice = j.iceServers; S.hasTurn = !!j.turn; S.iceAt = Date.now(); } catch {}
+  try { const j = await (await fetch('/api/config', { cache: 'no-store' })).json(); S.ice = j.iceServers; S.hasTurn = !!j.turn; S.iceAt = Date.now(); if (j.upload) S.upCfg = j.upload; } catch {}
 }
 // Ausente automático: 10 min sem mexer no aparelho
 const AWAY_MS = 10 * 60e3;

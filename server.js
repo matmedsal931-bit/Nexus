@@ -8,6 +8,7 @@ const https = require('https');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const { createStorage, sendRange } = require('./storage');
 // Versão do app = "impressão digital" dos arquivos do site. Muda a cada atualização;
 // quem está com o Nexo aberto recebe a nova e o app se atualiza sozinho.
 const APP_VERSION = (() => {
@@ -22,6 +23,8 @@ const { Server } = require('socket.io');
 
 const PORT = process.env.PORT || 3000;
 const DATA_DIR = path.join(__dirname, 'data');
+// onde ficam os arquivos grandes (R2, pasta local ou banco) — veja storage.js
+const store = createStorage({ dataDir: DATA_DIR, hasDb: !!process.env.DATABASE_URL });
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 const MAX_MSGS_PER_CHANNEL = 1000;
 
@@ -31,7 +34,7 @@ const MAX_MSGS_PER_CHANNEL = 1000;
 //   - Com DATABASE_URL (PostgreSQL, ex.: Neon gratuito): salva no banco,
 //     assim nada se perde quando o servidor na nuvem reinicia.
 // ------------------------------------------------------------------
-let db = { users: {}, tokens: {}, groups: {}, messages: {}, dms: {}, files: {}, friends: {}, freq: {}, reads: {} };
+let db = { users: {}, tokens: {}, groups: {}, messages: {}, dms: {}, files: {}, friends: {}, freq: {}, reads: {}, uploads: {} };
 let pgPool = null;
 
 // O banco é gravado em partes: uma linha com os dados gerais (usuários, grupos...)
@@ -130,7 +133,9 @@ const FILES_DIR = path.join(DATA_DIR, 'files');
 const MAX_FILE = 8 * 1024 * 1024;
 // Tipos que podem abrir direto no navegador (o resto é sempre baixado)
 const INLINE_OK = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp',
-  'video/mp4', 'video/webm', 'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/mp4']);
+  'video/mp4', 'video/webm', 'video/quicktime', 'video/x-matroska', 'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/mp4']);
+// MOV é o mesmo formato do MP4 por dentro: os navegadores tocam quando ele é entregue como MP4 (o arquivo não muda)
+const PLAY_AS = { 'video/quicktime': 'video/mp4' };
 // Descobre o tipo pelo conteúdo do arquivo, sem confiar no que o navegador disse
 function sniffMime(b) {
   const at = (o, ...bytes) => bytes.every((x, i) => b[o + i] === x);
@@ -140,8 +145,16 @@ function sniffMime(b) {
   if (str(0, 'GIF8')) return 'image/gif';
   if (str(0, 'RIFF') && str(8, 'WEBP')) return 'image/webp';
   if (str(0, 'RIFF') && str(8, 'WAVE')) return 'audio/wav';
-  if (str(4, 'ftyp')) return /^(M4A |M4B )/.test(b.toString('latin1', 8, 12)) ? 'audio/mp4' : 'video/mp4';
-  if (at(0, 0x1a, 0x45, 0xdf, 0xa3)) return 'video/webm';
+  if (str(4, 'ftyp')) {
+    const brand = b.toString('latin1', 8, 12);
+    if (/^(M4A |M4B )/.test(brand)) return 'audio/mp4';
+    if (brand === 'qt  ') return 'video/quicktime';            // .mov do iPhone/Mac
+    return 'video/mp4';
+  }
+  if (at(0, 0x1a, 0x45, 0xdf, 0xa3)) {                          // Matroska: WebM ou MKV (o "doctype" diz qual)
+    const head = b.toString('latin1', 0, Math.min(b.length, 64));
+    return head.includes('webm') ? 'video/webm' : 'video/x-matroska';
+  }
   if (str(0, 'OggS')) return 'audio/ogg';
   if (str(0, 'ID3') || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0)) return 'audio/mpeg';
   return null;
@@ -169,8 +182,11 @@ async function getFile(id) {
   return fs.existsSync(f) ? { ...meta, buf: fs.readFileSync(f) } : null;
 }
 async function delFile(id) {
-  if (!db.files[id]) return;
+  const meta = db.files[id];
+  if (!meta) return;
   delete db.files[id];
+  if (meta.thumb) delFile(meta.thumb);
+  if (meta.store === 's3' || meta.store === 'disk') { store.del(meta.key); return; }
   try {
     if (pgPool) await pgPool.query('DELETE FROM nexo_files WHERE id = $1', [id]);
     else fs.unlinkSync(path.join(FILES_DIR, id));
@@ -233,7 +249,7 @@ const DEFAULT_EVERYONE = { sendMessages: true, addReactions: true, connect: true
 const CH_PERMS = ['view', 'manageChannels', 'sendMessages', 'readHistory', 'attachFiles', 'embedLinks', 'addReactions',
   'manageMessages', 'connect', 'speak', 'video', 'stream', 'useVAD', 'muteMembers', 'deafenMembers', 'moveMembers', 'disconnectMembers'];
 // Configurações de cada canal (com os limites aceitos)
-const TEXT_CFG = { maxLen: 2000, slow: 0, edit: true, del: true, replies: true, maxFileMB: 25, newHistory: true, retention: 0 };
+const TEXT_CFG = { maxLen: 2000, slow: 0, edit: true, del: true, replies: true, maxFileMB: 0, newHistory: true, retention: 0 };
 const VOICE_CFG = { limit: 0, locked: false, temp: false, bitrate: 64, ns: '', screenAudio: true };
 function cleanCfg(type, cur, inc) {
   const base = type === 'voice' ? VOICE_CFG : TEXT_CFG;
@@ -251,7 +267,7 @@ function cleanCfg(type, cur, inc) {
     if ('maxLen' in inc) out.maxLen = num(inc.maxLen, 1, 2000, 2000);
     if ('slow' in inc) out.slow = [0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600].includes(Number(inc.slow)) ? Number(inc.slow) : 0;
     for (const k of ['edit', 'del', 'replies', 'newHistory']) if (k in inc) out[k] = !!inc[k];
-    if ('maxFileMB' in inc) out.maxFileMB = num(inc.maxFileMB, 1, 25, 25);
+    if ('maxFileMB' in inc) out.maxFileMB = num(inc.maxFileMB, 0, 5000, 0);   // 0 = segue o limite do grupo
     if ('retention' in inc) out.retention = [0, 1, 7, 30, 90, 365].includes(Number(inc.retention)) ? Number(inc.retention) : 0;
   }
   return out;
@@ -290,6 +306,8 @@ function ensureGroup(g) {
     for (const r of g.roles) if (r.perms?.video && !('stream' in r.perms)) r.perms.stream = true;
     g.permV = 2;
   }
+  // v22: o limite de anexo do canal passa a "seguir o grupo" (antes o padrão era 25 MB fixo)
+  if ((g.permV || 0) < 3) { for (const c of g.channels) if (c.cfg?.maxFileMB === 25) c.cfg.maxFileMB = 0; g.permV = 3; }
   for (const c of g.channels) { c.cfg = cleanCfg(c.type, c.cfg); c.ow ||= {}; c.topic ||= ''; }
   for (const c of g.categories) c.ow ||= {};
   g.desc ||= '';
@@ -424,6 +442,12 @@ function rateLimited(ip) {
 // Sessões: valem 60 dias desde o último uso; cada conta guarda no máximo 15.
 const SESSION_DAYS = 60;
 const MAX_SESSIONS = 15;
+const cookieOf = (req, name) => { const m = new RegExp('(?:^|;\\s*)' + name + '=([^;]+)').exec(req.headers.cookie || ''); return m ? decodeURIComponent(m[1]) : null; };
+const reqUser = req => sessionUser(req.get('x-token') || cookieOf(req, 'nexo_s'));
+function setSessionCookie(req, res, token) {
+  const secure = req.secure || req.get('x-forwarded-proto') === 'https';
+  res.append('Set-Cookie', `nexo_s=${encodeURIComponent(token)}; Path=/api; HttpOnly; SameSite=Lax; Max-Age=${SESSION_DAYS * 86400}${secure ? '; Secure' : ''}`);
+}
 function sessionUser(token) {
   if (typeof token !== 'string' || !token) return null;
   let s = db.tokens[token];
@@ -463,7 +487,8 @@ app.post('/api/register', (req, res) => {
     color: COLORS[Object.keys(db.users).length % COLORS.length], created: Date.now(),
   };
   db.users[u.id] = u;
-  res.json({ token: issueToken(u), user: publicUser(u) });
+  const tk = issueToken(u); setSessionCookie(req, res, tk);
+  res.json({ token: tk, user: publicUser(u) });
 });
 
 app.post('/api/login', (req, res) => {
@@ -476,12 +501,21 @@ app.post('/api/login', (req, res) => {
   const b = Buffer.from(u.hash, 'hex');
   if (a.length !== b.length || !crypto.timingSafeEqual(a, b))
     return res.status(401).json({ error: 'Usuário ou senha incorretos.' });
-  res.json({ token: issueToken(u), user: publicUser(u) });
+  const tk = issueToken(u); setSessionCookie(req, res, tk);
+  res.json({ token: tk, user: publicUser(u) });
+});
+// o app chama ao abrir: guarda a sessão num cookie protegido (o JavaScript não lê) para os arquivos
+app.post('/api/cookie', (req, res) => {
+  const t = req.get('x-token');
+  if (!sessionUser(t)) return res.status(401).json({ error: 'Sessão expirada.' });
+  setSessionCookie(req, res, t);
+  res.json({ ok: true });
 });
 
 app.post('/api/logout', (req, res) => {
   const t = String(req.body?.token || '');
   if (db.tokens[t]) { delete db.tokens[t]; save(); }
+  res.append('Set-Cookie', 'nexo_s=; Path=/api; HttpOnly; SameSite=Lax; Max-Age=0');
   res.json({ ok: true });
 });
 
@@ -525,7 +559,8 @@ async function turnServers() {
 }
 app.get('/api/config', async (req, res) => {
   const turn = await turnServers();
-  res.json({ iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }, ...turn], turn: turn.length > 0 });
+  res.json({ iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }, ...turn], turn: turn.length > 0,
+    upload: { maxMB: Math.round(store.maxBytes / MBY), mode: store.mode, partMB: store.partSize / MBY } });
 });
 
 // Foto de perfil (guardada como data URL no banco)
@@ -552,7 +587,7 @@ app.get('/api/emoji/:gid/:id', (req, res) => {
 
 // Envio de arquivo: o corpo é o arquivo puro; nome e tipo vêm nos cabeçalhos
 app.post('/api/upload', express.raw({ type: '*/*', limit: MAX_FILE + 1024 }), async (req, res) => {
-  const uid = sessionUser(req.get('x-token'));
+  const uid = reqUser(req);
   if (!uid || !db.users[uid]) return res.status(401).json({ error: 'Sessão expirada. Entre de novo.' });
   const buf = req.body;
   if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'Arquivo vazio.' });
@@ -568,34 +603,246 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: MAX_FILE + 1024 }), as
   try { name = decodeURIComponent(req.get('x-name') || ''); } catch { name = ''; }
   name = name.replace(/[\r\n"\\/]/g, '').trim().slice(0, 80) || 'arquivo';
   const id = newId();
+  if (storageFull(uid, buf.length)) return res.status(507).json({ error: storageFull(uid, buf.length) });
   try { await putFile(id, mime, name, buf); } catch (e) { console.error(e); return res.status(500).json({ error: 'Falha ao salvar o arquivo.' }); }
+  const purpose = String(req.get('x-purpose') || '');
+  Object.assign(db.files[id], { uid, at: Date.now(), kind: purpose === 'thumb' ? 'thumb' : purpose === 'att' ? 'att' : 'img' });
   save();
   res.json({ att: { id, name, mime, size: buf.length } });
 });
 
-// No máximo 40 arquivos ou 150 MB a cada 10 minutos por pessoa
+// No máximo 40 arquivos ou 600 MB a cada 10 minutos por pessoa
 const uploadLog = new Map();
 function uploadAllowed(uid, size) {
   const now = Date.now();
   const list = (uploadLog.get(uid) || []).filter(x => now - x.t < 10 * 60_000);
   const total = list.reduce((a, x) => a + x.s, 0);
-  if (list.length >= 40 || total + size > 150 * 1024 * 1024) { uploadLog.set(uid, list); return false; }
+  if (list.length >= 40 || total + size > 600 * 1024 * 1024) { uploadLog.set(uid, list); return false; }
   list.push({ t: now, s: size });
   uploadLog.set(uid, list);
   return true;
 }
 
+// Quem pode abrir um arquivo: quem pode ler a conversa onde ele foi enviado
+function canReadFile(uid, id, depth = 0) {
+  const f = db.files[id];
+  if (!f || !uid) return false;
+  if (f.parent && depth < 2) return canReadFile(uid, f.parent, depth + 1);
+  if (f.cid) {
+    const pr = dmPeers(f.cid);
+    if (pr) return pr.includes(uid);
+    const c = findChannel(f.cid);
+    return !!c && c.g.members.includes(uid) && canIn(c.g, uid, c.c, 'view') && canIn(c.g, uid, c.c, 'readHistory');
+  }
+  if (f.kind === 'att' || f.kind === 'thumb') return f.uid === uid;   // ainda não foi enviado: só quem subiu
+  return true;                                                          // imagens de perfil/grupo antigas
+}
 app.get('/api/file/:id', async (req, res) => {
-  const f = await getFile(req.params.id);
-  if (!f) return res.status(404).end();
-  // só abre no navegador se for mídia de verdade; qualquer outra coisa é baixada
-  const inline = INLINE_OK.has(f.mime) && sniffMime(f.buf) === f.mime;
+  const id = req.params.id, meta = db.files[id];
+  if (!meta || !/^[a-f0-9]{16}$/.test(id)) return res.status(404).end();
+  const uid = reqUser(req);
+  if (!uid) return res.status(401).json({ error: 'Entre na sua conta para ver este arquivo.' });
+  if (!canReadFile(uid, id)) return res.status(403).json({ error: 'Você não tem acesso a este arquivo.' });
+  const inline = INLINE_OK.has(meta.mime);
+  const type = inline ? (PLAY_AS[meta.mime] || meta.mime) : 'application/octet-stream';
+  const name = meta.name || 'arquivo';
+  if (meta.store === 's3') {
+    // o vídeo sai direto do R2 (sem passar pelo servidor), por um link que vale pouco tempo
+    res.set('Cache-Control', 'private, max-age=600');
+    return res.redirect(302, await store.readUrl(meta.key, { mime: type, inline, name }));
+  }
   safeFileHeaders(res);
-  res.set('Content-Type', inline ? f.mime : 'application/octet-stream');
-  res.set('Cache-Control', 'public, max-age=31536000, immutable');
-  res.set('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(f.name)}`);
-  res.send(f.buf);
+  res.set('Content-Type', type);
+  res.set('Cache-Control', 'private, max-age=86400');
+  res.set('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(name)}`);
+  if (meta.store === 'disk') {
+    const fp = store.localPath(meta.key);
+    if (!fs.existsSync(fp)) return res.status(404).end();
+    return sendRange(req, res, { size: fs.statSync(fp).size, open: (a, b) => fs.createReadStream(fp, { start: a, end: b }) });
+  }
+  const f = await getFile(id);
+  if (!f) return res.status(404).end();
+  const { Readable } = require('stream');
+  return sendRange(req, res, { size: f.buf.length, open: (a, b) => Readable.from([f.buf.subarray(a, b + 1)]) });
 });
+
+// ------------------------------------------------------------------
+// Envio de arquivos grandes em partes (pode continuar de onde parou)
+//   POST /api/up            → começa (ou retoma o mesmo arquivo)
+//   POST /api/up/:id/urls   → links para enviar as partes (R2) — ou PUT /api/up/:id/part/:n
+//   GET  /api/up/:id        → quais partes já chegaram
+//   POST /api/up/:id/done   → confere tudo e libera o arquivo
+//   DELETE /api/up/:id      → cancela
+// ------------------------------------------------------------------
+const MBY = 1024 * 1024;
+// limite para um canal: servidor → grupo → canal (o menor vence)
+function uploadLimit(uid, cid) {
+  let lim = store.maxBytes;
+  if (!cid || dmPeers(cid)) return lim;
+  const f = findChannel(cid);
+  if (!f) return lim;
+  if (f.g.maxUploadMB) lim = Math.min(lim, f.g.maxUploadMB * MBY);
+  if (f.c.cfg?.maxFileMB) lim = Math.min(lim, f.c.cfg.maxFileMB * MBY);
+  return lim;
+}
+const fmtMB = b => (b / MBY >= 10 ? Math.round(b / MBY) : (b / MBY).toFixed(1)) + ' MB';
+const USER_QUOTA = (Number(process.env.USER_QUOTA_MB) || 2048) * MBY;
+const TOTAL_QUOTA = (Number(process.env.STORAGE_QUOTA_MB) || (store.mode === 's3' ? 9500 : store.mode === 'db' ? 300 : 0)) * MBY;
+function usage(uid) {
+  let me = 0, all = 0;
+  for (const f of Object.values(db.files)) { all += f.size || 0; if (f.uid === uid) me += f.size || 0; }
+  for (const u of Object.values(db.uploads)) { all += u.size; if (u.uid === uid) me += u.size; }
+  return { me, all };
+}
+function storageFull(uid, size) {
+  const u = usage(uid);
+  if (u.me + size > USER_QUOTA) return `Você já usa ${fmtMB(u.me)} de ${fmtMB(USER_QUOTA)} com arquivos. Apague mensagens antigas com anexos para liberar espaço.`;
+  if (TOTAL_QUOTA && u.all + size > TOTAL_QUOTA) return 'O armazenamento do servidor está cheio. Avise o dono do site.';
+  return null;
+}
+function canSendFileTo(uid, cid) {
+  const pr = dmPeers(cid);
+  if (pr) return pr.includes(uid) && canDm(uid, pr.find(x => x !== uid) || uid) ? null : 'Você não pode enviar arquivos nesta conversa.';
+  const f = findChannel(cid);
+  if (!f || !f.g.members.includes(uid)) return 'Canal não encontrado.';
+  const P = permsIn(f.g, uid, f.c);
+  if (!P.sendMessages || !P.attachFiles) return 'Não é permitido enviar arquivos neste canal.';
+  return null;
+}
+const upOf = (req, res) => {
+  const uid = reqUser(req);
+  if (!uid) { res.status(401).json({ error: 'Sessão expirada. Entre de novo.' }); return null; }
+  const up = db.uploads[req.params.id];
+  if (!up || up.uid !== uid) { res.status(404).json({ error: 'Envio não encontrado (pode ter expirado). Escolha o arquivo de novo.' }); return null; }
+  return up;
+};
+app.post('/api/up', express.json({ limit: '16kb' }), async (req, res) => {
+  const uid = reqUser(req);
+  if (!uid || !db.users[uid]) return res.status(401).json({ error: 'Sessão expirada. Entre de novo.' });
+  const b = req.body || {};
+  const size = Math.floor(Number(b.size));
+  const cid = String(b.channelId || '');
+  if (!(size > 0)) return res.status(400).json({ error: 'Arquivo vazio.' });
+  const deny = canSendFileTo(uid, cid);
+  if (deny) return res.status(403).json({ error: deny });
+  const lim = uploadLimit(uid, cid);
+  if (size > lim) return res.status(413).json({ error: `O arquivo tem ${fmtMB(size)} e o limite aqui é ${fmtMB(lim)}.`, limit: lim });
+  let name = String(b.name || '').replace(/[\r\n"\\/]/g, '').trim().slice(0, 120) || 'arquivo';
+  const fkey = String(b.fkey || '').slice(0, 300);
+  // o mesmo arquivo de novo: continua o envio que já existe (não duplica)
+  const same = Object.entries(db.uploads).find(([, u]) => u.uid === uid && fkey && u.fkey === fkey && u.size === size);
+  if (same) {
+    const [id, u] = same;
+    u.cid = cid;
+    const parts = await store.listParts(u.key, u.uploadId).catch(() => []);
+    return res.json({ id, partSize: u.partSize, parts: u.parts, done: parts.map(p => p.n), mode: store.mode, resumed: true });
+  }
+  const full = storageFull(uid, size);
+  if (full) return res.status(507).json({ error: full });
+  if (!uploadAllowed(uid, size)) return res.status(429).json({ error: 'Você enviou muitos arquivos agora. Espere alguns minutos.' });
+  let mime = String(b.mime || '').toLowerCase().slice(0, 100);
+  if (!/^[\w.+-]+\/[\w.+-]+$/.test(mime) || /html|xml|javascript|svg/.test(mime)) mime = 'application/octet-stream';
+  const id = newId();
+  const partSize = store.partSize;
+  const up = { uid, cid, name, size, mime, fkey, key: 'f/' + id, at: Date.now(), partSize, parts: Math.max(1, Math.ceil(size / partSize)) };
+  if (store.mode !== 's3') up.key = id;
+  try { up.uploadId = await store.start(up.key, store.mode === 's3' ? 'application/octet-stream' : mime); }
+  catch (e) { console.error(e); return res.status(502).json({ error: 'O armazenamento não respondeu. Tente de novo.' }); }
+  const m = b.meta || {};
+  up.meta = { dur: Number(m.dur) > 0 ? Math.round(Number(m.dur) * 10) / 10 : undefined, w: Math.round(Number(m.w)) || undefined, h: Math.round(Number(m.h)) || undefined, playable: m.playable === true ? true : m.playable === false ? false : undefined };
+  if (typeof m.thumb === 'string' && db.files[m.thumb]?.uid === uid && db.files[m.thumb].kind === 'thumb') up.meta.thumb = m.thumb;
+  db.uploads[id] = up;
+  save();
+  res.json({ id, partSize, parts: up.parts, done: [], mode: store.mode });
+});
+app.get('/api/up/:id', async (req, res) => {
+  const up = upOf(req, res); if (!up) return;
+  const parts = await store.listParts(up.key, up.uploadId).catch(() => []);
+  res.json({ partSize: up.partSize, parts: up.parts, done: parts.map(p => p.n) });
+});
+app.post('/api/up/:id/urls', express.json({ limit: '16kb' }), async (req, res) => {
+  const up = upOf(req, res); if (!up) return;
+  if (store.mode !== 's3') return res.json({ urls: {} });
+  const want = (Array.isArray(req.body?.parts) ? req.body.parts : []).map(Number).filter(n => n >= 1 && n <= up.parts).slice(0, 50);
+  const urls = {};
+  for (const n of want) {
+    const sz = n < up.parts ? up.partSize : up.size - up.partSize * (up.parts - 1);
+    urls[n] = await store.partUrl(up.key, up.uploadId, n, sz);
+  }
+  res.json({ urls });
+});
+app.put('/api/up/:id/part/:n', express.raw({ type: () => true, limit: store.partSize + 1024 }), async (req, res) => {
+  const up = upOf(req, res); if (!up) return;
+  const n = Number(req.params.n);
+  if (!(n >= 1 && n <= up.parts)) return res.status(400).json({ error: 'Parte inválida.' });
+  const want = n < up.parts ? up.partSize : up.size - up.partSize * (up.parts - 1);
+  if (!Buffer.isBuffer(req.body) || req.body.length !== want) return res.status(400).json({ error: 'Parte com tamanho errado.' });
+  try { await store.writePart(up.uploadId, n, req.body); } catch (e) { return res.status(500).json({ error: 'Falha ao salvar a parte.' }); }
+  res.json({ ok: true });
+});
+app.delete('/api/up/:id', async (req, res) => {
+  const up = upOf(req, res); if (!up) return;
+  await store.abort(up.key, up.uploadId);
+  if (up.meta?.thumb) delFile(up.meta.thumb);
+  delete db.uploads[req.params.id];
+  save();
+  res.json({ ok: true });
+});
+app.post('/api/up/:id/done', async (req, res) => {
+  const up = upOf(req, res); if (!up) return;
+  const id = req.params.id;
+  const fail = async (code, error) => { await store.abort(up.key, up.uploadId); await store.del(up.key); delete db.uploads[id]; save(); res.status(code).json({ error }); };
+  try {
+    const parts = await store.listParts(up.key, up.uploadId);
+    const got = new Set(parts.map(p => p.n));
+    const missing = []; for (let n = 1; n <= up.parts; n++) if (!got.has(n)) missing.push(n);
+    if (missing.length) return res.status(409).json({ error: 'Ainda faltam partes.', missing });
+    const total = parts.reduce((a, p) => a + p.size, 0);
+    if (total !== up.size) return fail(400, 'O arquivo chegou com tamanho diferente do combinado.');
+    await store.finish(up.key, up.uploadId, parts);
+    const real = await store.size(up.key);
+    if (real !== up.size) return fail(400, 'O arquivo chegou incompleto.');
+    // o tipo vem do CONTEÚDO, não do nome nem do que o navegador disse
+    const sniffed = sniffMime(await store.head(up.key));
+    let mime = sniffed || 'application/octet-stream';
+    if (!sniffed && !/^(image|video|audio)\//.test(up.mime)) mime = up.mime === 'application/octet-stream' ? mime : up.mime.startsWith('text/plain') ? 'text/plain' : 'application/octet-stream';
+    if (/^(image|video|audio)\//.test(up.mime) && !sniffed) mime = 'application/octet-stream';   // disse que era vídeo, mas não é
+    const rec = { mime, name: up.name, size: up.size, store: store.mode, key: up.key, uid: up.uid, at: Date.now(), kind: 'att' };
+    if (store.mode === 'db') {
+      // banco: o arquivo (pequeno) vai para o PostgreSQL, como antes
+      const fp = store.localPath(up.key), buf = fs.readFileSync(fp);
+      await putFile(id, mime, up.name, buf);
+      fs.unlinkSync(fp);
+      delete rec.store; delete rec.key;
+    }
+    if (mime.startsWith('video/') || mime.startsWith('image/')) Object.assign(rec, Object.fromEntries(Object.entries(up.meta || {}).filter(([, v]) => v !== undefined)));
+    if (rec.thumb) db.files[rec.thumb].parent = id;
+    db.files[id] = rec;
+    delete db.uploads[id];
+    save();
+    res.json({ att: attView(id) });
+  } catch (e) {
+    console.error('upload done', e);
+    res.status(502).json({ error: 'Falha ao terminar o envio. Tente de novo (as partes enviadas continuam guardadas).' });
+  }
+});
+// o que vai na mensagem sobre o anexo
+function attView(id) {
+  const f = db.files[id];
+  if (!f) return null;
+  const a = { id, name: f.name, mime: f.mime, size: f.size };
+  for (const k of ['w', 'h', 'dur', 'thumb', 'playable']) if (f[k] !== undefined) a[k] = f[k];
+  return a;
+}
+// Limpeza (de hora em hora): envios largados há mais de 24 h e anexos que nunca foram enviados
+async function sweepFiles() {
+  const now = Date.now();
+  let changed = false;
+  for (const [id, u] of Object.entries(db.uploads)) if (now - u.at > 24 * 3600e3) { await store.abort(u.key, u.uploadId); if (u.meta?.thumb) delFile(u.meta.thumb); delete db.uploads[id]; changed = true; }
+  for (const [id, f] of Object.entries(db.files)) if ((f.kind === 'att' || (f.kind === 'thumb' && !f.parent)) && !f.cid && now - (f.at || 0) > 24 * 3600e3) { delFile(id); changed = true; }
+  await store.sweep();
+  if (changed) save();
+}
 
 app.get('/health', (req, res) => res.send('ok'));
 
@@ -690,7 +937,7 @@ function groupView(g, uid) {
   return {
     id: g.id, name: g.name, ownerId: g.ownerId, invite: g.invite,
     channels: uid ? chans.map(c => channelView(g, c, uid)) : g.channels,
-    desc: g.desc, banner: g.banner, created: g.created,
+    desc: g.desc, banner: g.banner, created: g.created, maxUploadMB: g.maxUploadMB || 0,
     iv: (g.icon || g.iconId || g.iconStillId) ? (g.iv || 1) : 0, igif: !!g.iconGif,
     bv: g.bannerStillId ? (g.bv || 1) : 0, bgif: !!g.bannerGif,
     roles: g.roles, everyone: g.everyone, memberRoles: g.memberRoles, joined: g.joined,
@@ -1174,6 +1421,7 @@ io.on('connection', socket => {
       g.name = n;
     }
     if (typeof d.desc === 'string') g.desc = d.desc.trim().slice(0, 300);
+    if ('maxUploadMB' in d) { const v = Math.round(Number(d.maxUploadMB)); g.maxUploadMB = v > 0 ? Math.min(v, store.maxBytes / MBY) : 0; }
     if (d.banner === '' || isHex(d.banner)) g.banner = d.banner;
     if (d.iconId || d.iconStillId) {
       if (!imgFile(d.iconId, true) || !imgFile(d.iconStillId, false))
@@ -1659,6 +1907,9 @@ io.on('connection', socket => {
     text = String(text || '').trim();
     const file = att && db.files[att.id] ? { id: att.id, ...db.files[att.id] } : null;
     if (att && !file) return reply(cb, { error: 'O arquivo não foi encontrado. Tente enviar de novo.' });
+    if (file && file.uid && file.uid !== u.id) return reply(cb, { error: 'Esse arquivo não é seu.' });
+    if (file && file.cid && file.cid !== channelId) return reply(cb, { error: 'Esse arquivo já foi enviado em outra conversa.' });
+    if (file && file.size > uploadLimit(u.id, channelId)) return reply(cb, { error: `O limite de arquivo aqui é ${fmtMB(uploadLimit(u.id, channelId))}.` });
     if (!text && !file) return reply(cb, { error: 'Mensagem vazia.' });
     const now = Date.now();
     if (ctx.g) {
@@ -1667,7 +1918,6 @@ io.on('connection', socket => {
       if (!P.sendMessages) return reply(cb, { error: 'Você não tem permissão para enviar mensagens neste canal.' });
       if (text.length > cfg.maxLen) return reply(cb, { error: `Este canal aceita no máximo ${cfg.maxLen} caracteres por mensagem.` });
       if (file && !P.attachFiles) return reply(cb, { error: 'Não é permitido enviar arquivos neste canal.' });
-      if (file && file.size > cfg.maxFileMB * 1048576) return reply(cb, { error: `Este canal aceita arquivos de até ${cfg.maxFileMB} MB.` });
       if (!P.embedLinks && /(https?:\/\/|www\.)\S+/i.test(text)) return reply(cb, { error: 'Não é permitido enviar links neste canal.' });
       if (replyTo && cfg.replies === false && !P.manageMessages) return reply(cb, { error: 'Respostas estão desativadas neste canal.' });
       if (cfg.slow && !P.manageMessages && !P.manageChannels) {
@@ -1690,8 +1940,10 @@ io.on('connection', socket => {
     const mentions = findMentions(text, ctx.dm ? ctx.peers : ctx.g.members).filter(x => x !== u.id);
     if (mentions.length) msg.mentions = mentions;
     if (file) {
-      msg.att = { id: file.id, name: file.name, mime: file.mime, size: file.size };
-      if (Number.isFinite(att.w) && Number.isFinite(att.h)) { msg.att.w = Math.round(att.w); msg.att.h = Math.round(att.h); }
+      db.files[file.id].cid = channelId;                  // agora só quem lê esta conversa abre o arquivo
+      if (file.thumb && db.files[file.thumb]) db.files[file.thumb].parent = file.id;
+      msg.att = attView(file.id);
+      if (!msg.att.w && Number.isFinite(att.w) && Number.isFinite(att.h)) { msg.att.w = Math.round(att.w); msg.att.h = Math.round(att.h); }
     }
     pushMsg(channelId, msg);
     if (ctx.dm) linkDm(...ctx.peers);
@@ -1990,7 +2242,13 @@ setInterval(() => {
   if (n) save();
 }, 6 * 3600e3).unref();
 
-loadDb().then(() => {
+loadDb().then(async () => {
+  db.uploads ||= {};
+  await store.init().catch(e => console.error('Armazenamento de arquivos:', e.message));
+  console.log(`Arquivos: ${store.mode === 's3' ? 'R2/S3' : store.mode === 'disk' ? 'pasta local' : 'banco de dados (só até 8 MB)'} · limite ${Math.round(store.maxBytes / MBY)} MB`);
+  // anexos antigos passam a seguir a permissão da conversa onde foram enviados
+  for (const [cid, arr] of Object.entries(db.messages)) for (const m of arr || []) if (m.att?.id && db.files[m.att.id] && !db.files[m.att.id].cid) { db.files[m.att.id].cid = cid; db.files[m.att.id].kind ||= 'att'; }
+  setInterval(() => sweepFiles().catch(() => {}), 3600e3).unref();
   Object.values(db.groups).forEach(ensureGroup);
   db.dms ||= {}; db.files ||= {}; db.friends ||= {}; db.freq ||= {}; db.reads ||= {};
   server.listen(PORT, () => {

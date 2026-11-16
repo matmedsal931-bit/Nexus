@@ -135,6 +135,7 @@ function secPerfil(g, body) {
         <input type="file" id="sp-bfile" accept="image/*" hidden>
         <div class="banners" id="sp-banners">${BANNERS.map(c => `<button data-c="${c}" style="background:${c ? `linear-gradient(${c}, ${c}cc)` : 'linear-gradient(#f2f3f5, #dcdde1)'}"></button>`).join('')}</div></div>
       <label>Descrição<textarea id="sp-desc" rows="3" maxlength="300" placeholder="Como o grupo começou? Por que as pessoas devem participar?">${esc(g.desc || '')}</textarea></label>
+      <label>Tamanho máximo de arquivos e vídeos<select id="sp-maxup">${(() => { const mx = upCfg().maxMB; const opts = [[0, `O máximo do servidor (${mx} MB)`], ...[8, 25, 50, 100, 250, 500, 1000, 2000].filter(n => n < mx).map(n => [n, n + ' MB'])]; return opts.map(([v, l]) => `<option value="${v}" ${(g.maxUploadMB || 0) === v ? 'selected' : ''}>${l}</option>`).join(''); })()}</select></label>
       <div class="row l"><button class="btn primary" id="sp-save">Salvar alterações</button></div>
     </div>
     <div class="g-card"><div class="g-card-banner" id="sp-cb"></div><div class="g-card-ic" id="sp-ci">${gIcon(g, 'lg', true)}</div>
@@ -177,7 +178,7 @@ function secPerfil(g, body) {
     const ic = st.iconImg ? { iconId: st.iconImg.id, iconStillId: st.iconImg.stillId, iconGif: st.iconImg.gif } : {};
     const bn = st.bannerImg ? { bannerId: st.bannerImg.id, bannerStillId: st.bannerImg.stillId, bannerGif: st.bannerImg.gif }
       : (st.rmBanner ? { bannerImg: null } : {});
-    const r = await act('group:edit', { groupId: g.id, name: q('#sp-name').value, desc: q('#sp-desc').value, banner: st.banner,
+    const r = await act('group:edit', { groupId: g.id, name: q('#sp-name').value, desc: q('#sp-desc').value, banner: st.banner, maxUploadMB: Number(q('#sp-maxup').value),
       icon: st.iconImg ? undefined : st.icon, ...ic, ...bn }, 'Perfil do grupo salvo!');
     if (!r && q('#sp-save')) q('#sp-save').disabled = false;
   };
