@@ -66,7 +66,19 @@ const S = {
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const linkify = t => esc(t).replace(/(https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"])/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
 const initial = n => esc((n || '?').trim().charAt(0) || '?');
-const avatar = (u, cls = '') => `<div class="av ${cls}" style="background:${esc(u.color || '#555')}">${initial(u.username)}</div>`;
+// Perfil atual de um usuario (cor e foto sempre atualizadas)
+function userById(id) {
+  if (!id) return null;
+  if (S.user?.id === id) return S.user;
+  for (const g of S.groups) { const m = g.members.find(x => x.id === id); if (m) return m; }
+  return null;
+}
+function avatar(u, cls = '') {
+  const id = u.userId ?? u.id;
+  const p = userById(id) || u;
+  const inner = p.av ? `<img src="/api/avatar/${esc(id)}?v=${p.av}" alt="" draggable="false">` : initial(p.username || u.username);
+  return `<div class="av ${cls}" style="background:${esc(p.color || u.color || '#555')}">${inner}</div>`;
+}
 const isMobile = () => matchMedia('(max-width: 820px)').matches;
 const fmtTime = ts => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
 function fmtDate(ts) {
@@ -179,6 +191,7 @@ function connect() {
     if (i >= 0) S.groups[i] = g; else S.groups.push(g);
     if (S.cid && !findChannel(S.cid)) { S.cid = null; if (S.gid === g.id) openDefaultChannel(); }
     renderAll();
+    if (S.cid && S.view === 'chat') renderMessages('keep');
   });
 
   sock.on('group:removed', ({ groupId }) => {
@@ -209,6 +222,7 @@ function connect() {
     }
   });
 
+  sock.on('profile:me', u => { S.user = u; renderAll(); });
   sock.on('presence', ({ userId, online }) => {
     for (const g of S.groups) for (const m of g.members) if (m.id === userId) m.online = online;
     renderMembers();
@@ -427,8 +441,8 @@ function renderMembers() {
   const off = g.members.filter(m => !(m.online || m.id === S.user.id)).sort(byName);
   const row = (m, isOn) => {
     const v = inVoice.get(m.id);
-    const st = v ? `<div class="st voice">${v.screen ? '📺 Transmitindo' : '🔊 Em voz'} · ${esc(v.name)}</div>` : '';
-    return `<div class="mem ${isOn ? 'on' : 'off'}"><div class="avw">${avatar(m, 'sm')}<i></i></div>
+    const st = v ? `<div class="st voice">${v.screen ? '📺 Transmitindo' : '🔊 Em voz'} · ${esc(v.name)}</div>` : (m.status ? `<div class="st">${esc(m.status)}</div>` : '');
+    return `<div class="mem ${isOn ? 'on' : 'off'}" data-uid="${esc(m.id)}"><div class="avw">${avatar(m, 'sm')}<i></i></div>
       <div class="info"><div class="n" style="color:${isOn ? esc(m.color) : 'inherit'}">${esc(m.username)}${m.id === g.ownerId ? ' 👑' : ''}</div>${st}</div></div>`;
   };
   el.innerHTML = `<div class="sec">Online — ${on.length}</div>${on.map(m => row(m, true)).join('')}`
@@ -437,9 +451,10 @@ function renderMembers() {
 
 function renderUserbar() {
   if (!S.user) return;
-  $('#userbar').innerHTML = `${avatar(S.user, 'sm')}<span class="nm">${esc(S.user.username)}</span>
+  $('#userbar').innerHTML = `<button class="me-btn" id="ub-me" title="Ver meu perfil">${avatar(S.user, 'sm')}<span class="col"><span class="nm">${esc(S.user.username)}</span><span class="sub">${esc(S.user.status || 'Online')}</span></span></button>
     ${S.installEvt ? `<button class="icon-btn install-btn" id="ub-install" title="Instalar o app neste aparelho">${I.download}</button>` : ''}<button class="icon-btn" id="ub-logout" title="Sair da conta">${I.logout}</button>`;
   $('#ub-install')?.addEventListener('click', installApp);
+  $('#ub-me').onclick = () => openProfile(S.user.id);
   $('#ub-logout').onclick = () => confirmModal('Sair da conta?', 'Você poderá entrar de novo quando quiser.', 'Sair', logout);
 }
 
@@ -472,7 +487,7 @@ function msgHtml(m, grouped) {
   const text = `<div class="msg-text">${linkify(m.text)}${m.edited ? ' <span class="edited">(editado)</span>' : ''}</div>${reacts}`;
   const tools = `<div class="msg-tools"><button data-t="react" title="Reagir">${I.smile}</button><button data-t="reply" title="Responder">${I.reply}</button><button data-t="more" title="Mais">${I.more}</button></div>`;
   if (!grouped) return `<div class="msg first" data-id="${esc(m.id)}">${avatar(m)}<div class="msg-body">${reply}<div class="msg-head">
-    <span class="msg-author" style="color:${esc(m.color)}">${esc(m.username)}</span><span class="msg-time">${fmtDate(m.ts)}</span></div>${text}</div>${tools}</div>`;
+    <span class="msg-author" style="color:${esc(userById(m.userId)?.color || m.color)}">${esc(m.username)}</span><span class="msg-time">${fmtDate(m.ts)}</span></div>${text}</div>${tools}</div>`;
   return `<div class="msg" data-id="${esc(m.id)}"><div class="gutter">${fmtTime(m.ts)}</div><div class="msg-body">${text}</div>${tools}</div>`;
 }
 
@@ -550,6 +565,7 @@ document.addEventListener('pointerdown', e => { if (!ctx.classList.contains('hid
   const msgOf = el => { const d = el.closest?.('.msg[data-id]'); return d && curMsg(d.dataset.id); };
   box.addEventListener('click', e => {
     const m = msgOf(e.target); if (!m) return;
+    if (e.target.closest('.msg > .av, .msg-author')) return openProfile(m.userId, m);
     const rb = e.target.closest('[data-react]'), tb = e.target.closest('[data-t]'), go = e.target.closest('[data-goto]');
     if (rb) return react(m, rb.dataset.react);
     if (go) {
@@ -873,7 +889,7 @@ function addPeer(p) {
   let peer = call.peers.get(p.sid);
   if (peer) return peer;
   peer = {
-    sid: p.sid, username: p.username, color: p.color,
+    sid: p.sid, userId: p.userId, username: p.username, color: p.color,
     state: { mic: !!p.mic, cam: !!p.cam, screen: !!p.screen },
     chain: Promise.resolve(), caller: false,
     camStream: new MediaStream(), screenStream: new MediaStream(),
@@ -1215,7 +1231,7 @@ function localCamStream() {
 }
 function renderLocalTiles() {
   if (!call.channelId) return;
-  const me = { username: S.user.username, color: S.user.color };
+  const me = { id: S.user.id, username: S.user.username, color: S.user.color };
   const cam = ensureTile('t-cam-me', me, false);
   setTile(cam, {
     stream: localCamStream(),
@@ -1335,6 +1351,101 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 window.addEventListener('beforeunload', () => { if (call.channelId) S.socket?.emit('voice:leave'); });
+
+// ---------------------------------------------------------------------
+// Perfil: ver o de qualquer pessoa e editar o seu
+// ---------------------------------------------------------------------
+$('#members').addEventListener('click', e => { const r = e.target.closest('[data-uid]'); if (r) openProfile(r.dataset.uid); });
+
+function openProfile(uid, fallback) {
+  const u = userById(uid) || (fallback && { id: uid, username: fallback.username, color: fallback.color, gone: true });
+  if (!u) return;
+  if (isMobile()) setMembers(false);
+  const me = uid === S.user?.id;
+  const g = curGroup();
+  const on = me || !!u.online;
+  let v = null;
+  for (const gr of S.groups) for (const c of gr.channels) if (c.type === 'voice')
+    for (const p of gr.voice?.[c.id] || []) if (p.userId === uid) v = { name: c.name, group: gr.name, screen: p.screen };
+  const since = u.created ? new Date(u.created).toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+  modal(`<div class="pf-banner" style="background:${esc(u.banner || u.color || '#555')}"></div>
+    <div class="pf-av">${avatar(u, 'xl')}<i class="${on ? 'on' : ''}"></i></div>
+    <h3 class="pf-name">${esc(u.username)}${g && g.ownerId === uid ? ' 👑' : ''}</h3>
+    ${u.status ? `<div class="pf-status">${esc(u.status)}</div>` : ''}
+    ${u.gone ? '<div class="pf-status">Esta pessoa não está mais no grupo.</div>' : ''}
+    ${v ? `<div class="pf-box"><div class="pf-h">${v.screen ? 'Transmitindo a tela' : 'Em chamada de voz'}</div><div class="pf-voice">${v.screen ? '📺' : '🔊'} ${esc(v.name)} · ${esc(v.group)}</div></div>` : ''}
+    ${u.gone ? '' : `<div class="pf-box">
+      <div class="pf-h">Sobre mim</div><div class="pf-bio">${u.bio ? linkify(u.bio) : '<span class="muted">Nada por aqui ainda.</span>'}</div>
+      ${since ? `<div class="pf-h">Membro desde</div><div>${since}</div>` : ''}
+      <div class="pf-h">Situação</div><div>${on ? '🟢 Online' : '⚫ Offline'}</div></div>`}
+    <div class="acts">${me ? '<button class="btn primary" id="pf-edit">Editar perfil</button>' : ''}<button class="btn" data-close>Fechar</button></div>`,
+    card => { const b = card.querySelector('#pf-edit'); if (b) b.onclick = editProfile; });
+}
+
+function fileToAvatar(file) {
+  return new Promise((res, rej) => {
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const side = Math.min(img.width, img.height), c = document.createElement('canvas');
+      c.width = c.height = 160;
+      c.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 160, 160);
+      URL.revokeObjectURL(url);
+      res(c.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('img')); };
+    img.src = url;
+  });
+}
+
+function editProfile() {
+  const u = S.user;
+  const PAL = ['#7c5cff', '#2fc27a', '#f5a524', '#f04f5a', '#3ba7ff', '#e05fd0', '#14b8a6', '#f97316'];
+  const st = { color: u.color, banner: u.banner || u.color, avatar: undefined };
+  modal(`<h3>Editar perfil</h3>
+    <div class="pe-top"><div id="pe-av">${avatar(u, 'xl')}</div>
+      <div class="btns"><button type="button" class="btn primary" id="pe-pick">Trocar foto</button>
+      <button type="button" class="btn" id="pe-rm">Remover foto</button></div>
+      <input type="file" id="pe-file" accept="image/*" hidden></div>
+    <label>Cor do nome<div class="swatches" id="pe-colors">${PAL.map(c => `<button type="button" class="swatch" data-c="${c}" style="background:${c}"></button>`).join('')}
+      <input type="color" id="pe-color" value="${esc(st.color)}" title="Outra cor"></div></label>
+    <label>Cor da capa<div class="swatches"><input type="color" id="pe-banner" value="${esc(st.banner)}"></div></label>
+    <label>Status<input id="pe-status" maxlength="60" placeholder="Ex.: Jogando PUBG" value="${esc(u.status || '')}"></label>
+    <label>Sobre mim<textarea id="pe-bio" rows="3" maxlength="190" placeholder="Conte algo sobre você">${esc(u.bio || '')}</textarea><span class="cnt" id="pe-cnt"></span></label>
+    <p class="muted" style="margin:0;font-size:13px">O nome de usuário (${esc(u.username)}) é o seu login e não pode ser alterado.</p>
+    <div class="acts"><button class="btn" data-close>Cancelar</button><button class="btn primary" id="pe-save">Salvar</button></div>`, card => {
+    const q = sel => card.querySelector(sel);
+    const preview = () => {
+      const el = q('#pe-av .av');
+      el.style.background = st.color;
+      if (st.avatar) el.innerHTML = `<img src="${st.avatar}" alt="">`;
+      else if (st.avatar === null) el.textContent = (u.username[0] || '?');
+      card.querySelectorAll('.swatch').forEach(b => b.classList.toggle('sel', b.dataset.c.toLowerCase() === st.color.toLowerCase()));
+    };
+    const cnt = () => { q('#pe-cnt').textContent = `${q('#pe-bio').value.length}/190`; };
+    q('#pe-pick').onclick = () => q('#pe-file').click();
+    q('#pe-file').onchange = async e => {
+      const f = e.target.files[0]; if (!f) return;
+      try { st.avatar = await fileToAvatar(f); preview(); } catch { toast('Não consegui abrir essa imagem.'); }
+    };
+    q('#pe-rm').onclick = () => { st.avatar = null; preview(); };
+    q('#pe-colors').onclick = e => { const b = e.target.closest('.swatch'); if (b) { st.color = b.dataset.c; q('#pe-color').value = st.color; preview(); } };
+    q('#pe-color').oninput = e => { st.color = e.target.value; preview(); };
+    q('#pe-banner').oninput = e => { st.banner = e.target.value; };
+    q('#pe-bio').oninput = cnt;
+    q('#pe-save').onclick = async () => {
+      q('#pe-save').disabled = true;
+      const r = await emit('profile:update', { color: st.color, banner: st.banner, avatar: st.avatar, status: q('#pe-status').value, bio: q('#pe-bio').value });
+      if (r.error) { q('#pe-save').disabled = false; return toast(r.error); }
+      S.user = r.user;
+      renderAll();
+      if (S.cid && S.view === 'chat') renderMessages('keep');
+      if (call.channelId) renderLocalTiles();
+      toast('Perfil atualizado!');
+      openProfile(S.user.id);
+    };
+    preview(); cnt();
+  });
+}
 
 // ---------------------------------------------------------------------
 // Instalar como aplicativo (PC e celular)

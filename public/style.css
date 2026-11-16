@@ -281,3 +281,33 @@ input:focus, textarea:focus, select:focus { border-color: var(--acc); }
   .compose-bar { margin: 0 10px; }
   .controls .quality { padding: 0 8px; }
 }
+
+/* ---------- Perfil ---------- */
+.av { overflow: hidden; }
+.av img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.av.xl { width: 88px; height: 88px; font-size: 34px; }
+.msg > .av, .msg-author, .mem { cursor: pointer; }
+.msg-author:hover { text-decoration: underline; }
+.me-btn { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; border: 0; background: transparent; padding: 4px; border-radius: 8px; text-align: left; }
+.me-btn:hover { background: var(--bg3); }
+.me-btn .col { min-width: 0; }
+.me-btn .nm { display: block; font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.me-btn .sub { display: block; font-size: 11px; color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-banner { height: 96px; margin: -22px -22px 0; border-radius: 14px 14px 0 0; }
+.pf-av { position: relative; width: 100px; height: 100px; margin: -64px 0 -4px; border-radius: 50%; border: 6px solid var(--bg2); background: var(--bg2); }
+.pf-av i { position: absolute; right: 0; bottom: 0; width: 18px; height: 18px; border-radius: 50%; border: 5px solid var(--bg2); background: #6b6f7b; box-sizing: content-box; }
+.pf-av i.on { background: var(--green); }
+.pf-name { margin: 0; font-size: 22px; overflow-wrap: anywhere; }
+.pf-status { color: var(--mut); margin-top: -8px; overflow-wrap: anywhere; }
+.pf-box { background: var(--bg1); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; }
+.pf-h { font-size: 12px; font-weight: 700; text-transform: uppercase; color: var(--mut); letter-spacing: .03em; }
+.pf-h:not(:first-child) { margin-top: 10px; }
+.pf-bio { white-space: pre-wrap; overflow-wrap: anywhere; }
+.pf-voice { color: var(--green); font-weight: 600; }
+.pe-top { display: flex; align-items: center; gap: 14px; }
+.pe-top .btns { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.swatches { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.swatch { width: 30px; height: 30px; border-radius: 50%; border: 3px solid transparent; padding: 0; }
+.swatch.sel { border-color: #fff; }
+input[type=color] { width: 44px; height: 34px; padding: 2px; }
+.cnt { align-self: flex-end; font-size: 11px; color: var(--mut); margin-top: -4px; text-transform: none; }

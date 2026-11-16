@@ -82,7 +82,10 @@ const newInvite = () => crypto.randomBytes(4).toString('hex');
 const hashPass = (pw, salt) => crypto.scryptSync(String(pw), salt, 64).toString('hex');
 const COLORS = ['#7c5cff', '#2fc27a', '#f5a524', '#f04f5a', '#3ba7ff', '#e05fd0', '#14b8a6', '#f97316'];
 
-function publicUser(u) { return { id: u.id, username: u.username, color: u.color }; }
+function publicUser(u) {
+  return { id: u.id, username: u.username, color: u.color, banner: u.banner || '', bio: u.bio || '',
+    status: u.status || '', av: u.avatar ? (u.av || 1) : 0, created: u.created };
+}
 function cleanName(s, max) { return String(s || '').replace(/\s+/g, ' ').trim().slice(0, max); }
 
 // ------------------------------------------------------------------
@@ -161,6 +164,16 @@ app.get('/api/config', (req, res) => {
   res.json({ iceServers });
 });
 
+// Foto de perfil (guardada como data URL no banco)
+app.get('/api/avatar/:id', (req, res) => {
+  const u = db.users[req.params.id];
+  const m = u?.avatar && /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(u.avatar);
+  if (!m) return res.status(404).end();
+  res.set('Content-Type', m[1]);
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  res.send(Buffer.from(m[2], 'base64'));
+});
+
 app.get('/health', (req, res) => res.send('ok'));
 
 // ------------------------------------------------------------------
@@ -229,6 +242,26 @@ io.on('connection', socket => {
   online.set(u.id, (online.get(u.id) || 0) + 1);
   if (online.get(u.id) === 1) mine.forEach(g => socket.to('g:' + g.id).emit('presence', { userId: u.id, online: true }));
   socket.emit('init', { user: publicUser(u), groups: mine.map(groupView) });
+
+  // ---------- Perfil ----------
+  socket.on('profile:update', (d = {}, cb) => {
+    const hex = v => typeof v === 'string' && /^#[0-9a-fA-F]{6}$/.test(v);
+    if (hex(d.color)) u.color = d.color;
+    if (hex(d.banner)) u.banner = d.banner;
+    if (typeof d.bio === 'string') u.bio = d.bio.trim().slice(0, 190);
+    if (typeof d.status === 'string') u.status = cleanName(d.status, 60);
+    if (d.avatar === null) { delete u.avatar; }
+    else if (typeof d.avatar === 'string') {
+      if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(d.avatar) || d.avatar.length > 90000)
+        return reply(cb, { error: 'Imagem inválida ou grande demais.' });
+      u.avatar = d.avatar;
+      u.av = (u.av || 0) + 1;
+    }
+    save();
+    io.to('u:' + u.id).emit('profile:me', publicUser(u));
+    for (const g of Object.values(db.groups)) if (g.members.includes(u.id)) emitGroup(g);
+    reply(cb, { user: publicUser(u) });
+  });
 
   // ---------- Grupos ----------
   socket.on('group:create', ({ name } = {}, cb) => {
