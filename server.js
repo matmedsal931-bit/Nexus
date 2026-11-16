@@ -184,6 +184,7 @@ const io = new Server(server, { maxHttpBufferSize: 1e6 });
 //   voice: channelId -> Map(socketId -> { userId, username, color, mic, cam, screen })
 // ------------------------------------------------------------------
 const voice = new Map();
+const online = new Map(); // userId -> numero de conexoes abertas
 
 function findChannel(cid) {
   for (const g of Object.values(db.groups)) {
@@ -204,7 +205,7 @@ function voicePresence(g) {
 function groupView(g) {
   return {
     id: g.id, name: g.name, ownerId: g.ownerId, invite: g.invite, channels: g.channels,
-    members: g.members.map(m => db.users[m]).filter(Boolean).map(publicUser),
+    members: g.members.map(m => db.users[m]).filter(Boolean).map(x => ({ ...publicUser(x), online: online.has(x.id) })),
     voice: voicePresence(g),
   };
 }
@@ -225,6 +226,8 @@ io.on('connection', socket => {
   socket.join('u:' + u.id);
   const mine = Object.values(db.groups).filter(g => g.members.includes(u.id));
   mine.forEach(g => socket.join('g:' + g.id));
+  online.set(u.id, (online.get(u.id) || 0) + 1);
+  if (online.get(u.id) === 1) mine.forEach(g => socket.to('g:' + g.id).emit('presence', { userId: u.id, online: true }));
   socket.emit('init', { user: publicUser(u), groups: mine.map(groupView) });
 
   // ---------- Grupos ----------
@@ -309,7 +312,7 @@ io.on('connection', socket => {
   });
 
   let lastMsgs = [];
-  socket.on('message:send', ({ channelId, text } = {}, cb) => {
+  socket.on('message:send', ({ channelId, text, replyTo } = {}, cb) => {
     const f = findChannel(channelId);
     if (!f || !f.g.members.includes(u.id) || f.c.type !== 'text') return reply(cb, { error: 'Canal não encontrado.' });
     text = String(text || '').trim().slice(0, 2000);
@@ -318,12 +321,67 @@ io.on('connection', socket => {
     lastMsgs = lastMsgs.filter(t => now - t < 5000);
     if (lastMsgs.length >= 8) return reply(cb, { error: 'Calma! Você está enviando rápido demais.' });
     lastMsgs.push(now);
-    const msg = { id: newId(), userId: u.id, username: u.username, color: u.color, text, ts: now };
     const arr = (db.messages[channelId] ||= []);
+    const msg = { id: newId(), userId: u.id, username: u.username, color: u.color, text, ts: now };
+    if (replyTo) {
+      const r = arr.find(m => m.id === replyTo);
+      if (r) msg.reply = { id: r.id, username: r.username, color: r.color, text: r.text.slice(0, 120) };
+    }
     arr.push(msg);
     if (arr.length > MAX_MSGS_PER_CHANNEL) arr.splice(0, arr.length - MAX_MSGS_PER_CHANNEL);
     save();
     io.to('g:' + f.g.id).emit('message', { groupId: f.g.id, channelId, msg });
+    reply(cb, { ok: true });
+  });
+
+  // ---------- Editar / excluir / reagir ----------
+  function locate(channelId, id) {
+    const f = findChannel(channelId);
+    if (!f || !f.g.members.includes(u.id)) return null;
+    const arr = db.messages[channelId] || [];
+    const m = arr.find(x => x.id === id);
+    return m ? { f, arr, m } : null;
+  }
+
+  socket.on('message:edit', ({ channelId, id, text } = {}, cb) => {
+    const l = locate(channelId, id);
+    if (!l) return reply(cb, { error: 'Mensagem não encontrada.' });
+    if (l.m.userId !== u.id) return reply(cb, { error: 'Você só pode editar as suas mensagens.' });
+    text = String(text || '').trim().slice(0, 2000);
+    if (!text) return reply(cb, { error: 'Mensagem vazia.' });
+    l.m.text = text;
+    l.m.edited = true;
+    save();
+    io.to('g:' + l.f.g.id).emit('message:edit', { channelId, id, text });
+    reply(cb, { ok: true });
+  });
+
+  socket.on('message:delete', ({ channelId, id } = {}, cb) => {
+    const l = locate(channelId, id);
+    if (!l) return reply(cb, { error: 'Mensagem não encontrada.' });
+    if (l.m.userId !== u.id && l.f.g.ownerId !== u.id) return reply(cb, { error: 'Sem permissão.' });
+    l.arr.splice(l.arr.indexOf(l.m), 1);
+    save();
+    io.to('g:' + l.f.g.id).emit('message:delete', { channelId, id });
+    reply(cb, { ok: true });
+  });
+
+  socket.on('message:react', ({ channelId, id, emoji } = {}, cb) => {
+    const l = locate(channelId, id);
+    if (!l) return reply(cb, { error: 'Mensagem não encontrada.' });
+    emoji = String(emoji || '').trim();
+    if (!emoji || emoji.length > 16 || /[\s<>&"']/.test(emoji)) return reply(cb, { error: 'Reação inválida.' });
+    const rs = (l.m.reactions ||= {});
+    const list = rs[emoji] || [];
+    const i = list.indexOf(u.id);
+    if (i >= 0) list.splice(i, 1);
+    else {
+      if (!rs[emoji] && Object.keys(rs).length >= 20) return reply(cb, { error: 'Limite de reações atingido.' });
+      list.push(u.id);
+    }
+    if (list.length) rs[emoji] = list; else delete rs[emoji];
+    save();
+    io.to('g:' + l.f.g.id).emit('message:react', { channelId, id, reactions: rs });
     reply(cb, { ok: true });
   });
 
@@ -377,7 +435,14 @@ io.on('connection', socket => {
     io.to(to).emit('signal', { from: socket.id, data });
   });
 
-  socket.on('disconnect', leaveVoice);
+  socket.on('disconnect', () => {
+    leaveVoice();
+    const n = (online.get(u.id) || 1) - 1;
+    if (n > 0) { online.set(u.id, n); return; }
+    online.delete(u.id);
+    for (const g of Object.values(db.groups))
+      if (g.members.includes(u.id)) io.to('g:' + g.id).emit('presence', { userId: u.id, online: false });
+  });
 });
 
 // ------------------------------------------------------------------

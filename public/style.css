@@ -215,3 +215,69 @@ input:focus, textarea:focus, select:focus { border-color: var(--acc); }
   .composer { padding: 0 10px calc(10px + var(--safe-b)); }
   .ch .del { opacity: 1; }
 }
+
+/* ---------- Acoes de mensagem ---------- */
+.msg { position: relative; }
+.msg.flash { animation: flash 1.2s ease; }
+@keyframes flash { 0%, 40% { background: rgba(124,92,255,.25); } }
+.msg-tools { position: absolute; right: 16px; top: -14px; display: none; background: var(--bg1); border: 1px solid var(--line); border-radius: 8px; padding: 2px; z-index: 2; }
+.msg-tools button { border: 0; background: transparent; color: var(--mut); width: 30px; height: 28px; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; }
+.msg-tools button:hover { background: var(--bg3); color: var(--txt); }
+.msg-tools svg { width: 17px; height: 17px; }
+@media (hover: hover) { .msg:hover .msg-tools { display: flex; } }
+.edited { font-size: 11px; color: var(--mut); }
+.reply-ref { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--mut); cursor: pointer; margin-bottom: 2px; min-width: 0; }
+.reply-ref svg { width: 14px; height: 14px; }
+.reply-ref span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.reply-ref:hover span { color: var(--txt); }
+.reacts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+.react { border: 1px solid transparent; background: var(--bg3); border-radius: 8px; padding: 2px 7px; font-size: 14px; display: inline-flex; align-items: center; gap: 5px; }
+.react b { font-size: 12px; color: var(--mut); }
+.react.mine { border-color: var(--acc); background: rgba(124,92,255,.18); }
+.react.mine b { color: #fff; }
+.compose-bar { margin: 0 16px; padding: 7px 8px 7px 12px; background: var(--bg1); border-radius: 10px 10px 0 0; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--mut); }
+.compose-bar span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compose-bar b { color: var(--txt); }
+.compose-bar svg { width: 16px; height: 16px; }
+.compose-bar .icon-btn { width: 24px; height: 24px; }
+.compose-bar:not(.hidden) + .composer textarea { border-radius: 0 0 10px 10px; }
+
+.ctx { position: fixed; z-index: 120; background: #0d0e12; border: 1px solid var(--line); border-radius: 12px; padding: 6px; min-width: 220px; box-shadow: 0 16px 50px rgba(0,0,0,.55); }
+.ctx .quick { display: flex; gap: 6px; padding: 4px 4px 8px; }
+.ctx .quick button { flex: 1; font-size: 20px; background: var(--bg3); border: 0; border-radius: 8px; padding: 7px 0; }
+.ctx .quick button:hover { background: var(--bg4); }
+.ctx .item { display: flex; gap: 10px; align-items: center; width: 100%; border: 0; background: transparent; padding: 9px 10px; border-radius: 6px; text-align: left; font-weight: 500; }
+.ctx .item:hover { background: var(--acc); color: #fff; }
+.ctx .item.danger { color: var(--red); }
+.ctx .item.danger:hover { background: var(--red); color: #fff; }
+.ctx .item svg { width: 18px; height: 18px; }
+.ctx .sep { height: 1px; background: var(--line); margin: 4px 6px; }
+.ctx .grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; }
+.ctx .grid button { border: 0; background: transparent; font-size: 22px; padding: 5px 0; border-radius: 6px; }
+.ctx .grid button:hover { background: var(--bg3); }
+
+/* ---------- Membros ---------- */
+.members { width: 240px; flex-shrink: 0; background: var(--bg1); border-left: 1px solid var(--bg0); overflow-y: auto; display: none; padding: calc(8px + var(--safe-t)) 8px 12px; }
+.app.show-members .members { display: block; }
+.members .sec { padding: 14px 8px 6px; }
+.mem { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: 8px; }
+.mem:hover { background: var(--bg3); }
+.mem.off { opacity: .45; }
+.mem .avw { position: relative; flex-shrink: 0; }
+.mem .avw i { position: absolute; right: -3px; bottom: -3px; width: 9px; height: 9px; border-radius: 50%; border: 3px solid var(--bg1); background: #6b6f7b; box-sizing: content-box; }
+.mem.on .avw i { background: var(--green); }
+.mem .info { min-width: 0; flex: 1; }
+.mem .n { font-weight: 600; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem .st { font-size: 12px; color: var(--mut); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mem .st.voice { color: var(--green); }
+.install-btn { color: var(--green) !important; }
+
+@media (max-width: 820px) {
+  .members { position: fixed; inset: 0 0 0 auto; z-index: 60; width: min(270px, 80vw); box-shadow: -10px 0 40px rgba(0,0,0,.5); }
+  .app.show-members .backdrop { display: block; position: fixed; inset: 0; background: rgba(0,0,0,.5); z-index: 55; }
+  .ctx { left: 8px !important; right: 8px; top: auto !important; bottom: calc(8px + var(--safe-b)); }
+  .ctx .item { padding: 13px 12px; font-size: 16px; }
+  .ctx .quick button { font-size: 24px; padding: 10px 0; }
+  .compose-bar { margin: 0 10px; }
+  .controls .quality { padding: 0 8px; }
+}

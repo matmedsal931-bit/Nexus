@@ -69,6 +69,7 @@
 
       <section id="chat-view" class="chat-view hidden">
         <div class="messages" id="messages"></div>
+        <div class="compose-bar hidden" id="compose-bar"></div>
         <form class="composer" id="composer">
           <textarea id="msg-input" rows="1" maxlength="2000" placeholder="Mensagem" enterkeyhint="send"></textarea>
           <button class="send-btn" type="submit" aria-label="Enviar" id="send-btn"></button>
@@ -80,8 +81,10 @@
         <div class="controls" id="controls"></div>
       </section>
     </main>
+    <aside class="members" id="members"></aside>
   </div>
 
+  <div id="ctx" class="ctx hidden"></div>
   <div id="modal" class="modal hidden"><div class="modal-card" id="modal-card"></div></div>
   <div id="toasts" class="toasts"></div>
   <div id="audio-sink" class="audio-sink"></div>

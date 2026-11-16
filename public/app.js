@@ -36,6 +36,14 @@ const I = {
   flip: P('<path d="M20 7h-3l-2-3H9L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2z"/><path d="M9 13a3 3 0 0 1 5.2-2M15 14a3 3 0 0 1-5.2 1.9"/><path d="M14 9v2h2M10 17v-2H8"/>'),
   grid: P('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>'),
   back: P('<path d="m15 18-6-6 6-6"/>'),
+  reply: P('<path d="m9 14-5-5 5-5"/><path d="M4 9h10a6 6 0 0 1 6 6v4"/>'),
+  smile: P('<circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/>'),
+  more: P('<circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/>'),
+  edit: P('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>'),
+  copy: P('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>'),
+  users: P('<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>'),
+  download: P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>'),
+  x: P('<path d="M18 6 6 18M6 6l12 12"/>'),
 };
 
 // ---------------------------------------------------------------------
@@ -142,6 +150,7 @@ function logout() {
 async function start() {
   $('#auth').classList.add('hidden');
   $('#app').classList.remove('hidden');
+  setMembers(!isMobile() && store.get('nexo_members') !== '0', true);
   try { const r = await fetch('/api/config'); S.ice = (await r.json()).iceServers; } catch {}
   connect();
 }
@@ -186,6 +195,7 @@ function connect() {
     if (!g) return;
     g.voice = voice;
     renderChannels();
+    renderMembers();
   });
 
   sock.on('message', ({ groupId, channelId, msg }) => {
@@ -197,6 +207,25 @@ function connect() {
       renderRail(); renderChannels();
       notify(msg, groupId, channelId);
     }
+  });
+
+  sock.on('presence', ({ userId, online }) => {
+    for (const g of S.groups) for (const m of g.members) if (m.id === userId) m.online = online;
+    renderMembers();
+  });
+  sock.on('message:edit', ({ channelId, id, text }) => {
+    const m = (S.msgs[channelId] || []).find(x => x.id === id);
+    if (m) { m.text = text; m.edited = true; if (channelId === S.cid) renderMessages('keep'); }
+  });
+  sock.on('message:delete', ({ channelId, id }) => {
+    const arr = S.msgs[channelId];
+    if (!arr) return;
+    const i = arr.findIndex(x => x.id === id);
+    if (i >= 0) { arr.splice(i, 1); if (channelId === S.cid) renderMessages('keep'); }
+  });
+  sock.on('message:react', ({ channelId, id, reactions }) => {
+    const m = (S.msgs[channelId] || []).find(x => x.id === id);
+    if (m) { m.reactions = reactions; if (channelId === S.cid) renderMessages('keep'); }
   });
 
   sock.on('disconnect', reason => {
@@ -248,6 +277,7 @@ function openTextChannel(cid) {
   if (!f) return;
   S.gid = f.g.id;
   S.cid = cid;
+  clearCompose();
   store.set('nexo_gid', f.g.id);
   store.set('nexo_cid_' + f.g.id, cid);
   S.unread.delete(cid);
@@ -278,12 +308,12 @@ function openDrawer() { $('#app').classList.add('drawer'); }
 function closeDrawer() { $('#app').classList.remove('drawer'); }
 $('#menu-btn').innerHTML = I.menu;
 $('#menu-btn').onclick = openDrawer;
-$('#backdrop').onclick = closeDrawer;
+$('#backdrop').onclick = () => { closeDrawer(); if (isMobile()) setMembers(false); };
 
 // ---------------------------------------------------------------------
 // Renderizacao
 // ---------------------------------------------------------------------
-function renderAll() { renderRail(); renderChannels(); renderHeader(); renderUserbar(); renderCallbar(); }
+function renderAll() { renderRail(); renderChannels(); renderHeader(); renderUserbar(); renderCallbar(); renderMembers(); }
 
 function renderRail() {
   const rail = $('#rail');
@@ -373,12 +403,43 @@ function renderHeader() {
   } else {
     t.innerHTML = `<span>${esc(curGroup()?.name || 'Nexo')}</span>`;
   }
+  if (curGroup()) {
+    const b = document.createElement('button');
+    b.className = 'icon-btn'; b.title = 'Membros'; b.innerHTML = I.users;
+    b.onclick = () => setMembers(!$('#app').classList.contains('show-members'));
+    a.appendChild(b);
+  }
+}
+
+// ---------- Lista de membros (online / em voz / offline) ----------
+function setMembers(show, silent) {
+  $('#app').classList.toggle('show-members', !!show);
+  if (!silent && !isMobile()) store.set('nexo_members', show ? '1' : '0');
+}
+function renderMembers() {
+  const el = $('#members'), g = curGroup();
+  if (!g || !S.user) { el.innerHTML = ''; return; }
+  const inVoice = new Map();
+  for (const c of g.channels) if (c.type === 'voice')
+    for (const p of g.voice?.[c.id] || []) inVoice.set(p.userId, { name: c.name, screen: p.screen });
+  const byName = (a, b) => a.username.localeCompare(b.username, 'pt-BR');
+  const on = g.members.filter(m => m.online || m.id === S.user.id).sort(byName);
+  const off = g.members.filter(m => !(m.online || m.id === S.user.id)).sort(byName);
+  const row = (m, isOn) => {
+    const v = inVoice.get(m.id);
+    const st = v ? `<div class="st voice">${v.screen ? '📺 Transmitindo' : '🔊 Em voz'} · ${esc(v.name)}</div>` : '';
+    return `<div class="mem ${isOn ? 'on' : 'off'}"><div class="avw">${avatar(m, 'sm')}<i></i></div>
+      <div class="info"><div class="n" style="color:${isOn ? esc(m.color) : 'inherit'}">${esc(m.username)}${m.id === g.ownerId ? ' 👑' : ''}</div>${st}</div></div>`;
+  };
+  el.innerHTML = `<div class="sec">Online — ${on.length}</div>${on.map(m => row(m, true)).join('')}`
+    + (off.length ? `<div class="sec">Offline — ${off.length}</div>${off.map(m => row(m, false)).join('')}` : '');
 }
 
 function renderUserbar() {
   if (!S.user) return;
   $('#userbar').innerHTML = `${avatar(S.user, 'sm')}<span class="nm">${esc(S.user.username)}</span>
-    <button class="icon-btn" id="ub-logout" title="Sair da conta">${I.logout}</button>`;
+    ${S.installEvt ? `<button class="icon-btn install-btn" id="ub-install" title="Instalar o app neste aparelho">${I.download}</button>` : ''}<button class="icon-btn" id="ub-logout" title="Sair da conta">${I.logout}</button>`;
+  $('#ub-install')?.addEventListener('click', installApp);
   $('#ub-logout').onclick = () => confirmModal('Sair da conta?', 'Você poderá entrar de novo quando quiser.', 'Sair', logout);
 }
 
@@ -399,8 +460,26 @@ function renderCallbar() {
   bar.querySelector('[data-c=leave]').onclick = () => leaveCall();
 }
 
-function renderMessages(appended = false) {
+const QUICK = ['✅', '❤️', '😂', '👍'];
+const EMOJIS = ['👍', '👎', '❤️', '😂', '😮', '😢', '😡', '🔥', '🎉', '👏', '🙏', '💀', '👀', '✅', '❌', '💯',
+  '😎', '🤔', '😭', '🥰', '😴', '🤡', '🤝', '💪', '🎮', '🏆', '⭐', '🍕', '☕', '🍺', '💤', '🚀'];
+
+function msgHtml(m, grouped) {
+  const reply = m.reply ? `<div class="reply-ref" data-goto="${esc(m.reply.id)}">${I.reply}<b style="color:${esc(m.reply.color)}">${esc(m.reply.username)}</b><span>${esc(m.reply.text)}</span></div>` : '';
+  const rs = m.reactions ? Object.entries(m.reactions).filter(([, ids]) => ids.length) : [];
+  const reacts = rs.length ? `<div class="reacts">${rs.map(([e, ids]) =>
+    `<button class="react ${ids.includes(S.user?.id) ? 'mine' : ''}" data-react="${esc(e)}">${esc(e)} <b>${ids.length}</b></button>`).join('')}</div>` : '';
+  const text = `<div class="msg-text">${linkify(m.text)}${m.edited ? ' <span class="edited">(editado)</span>' : ''}</div>${reacts}`;
+  const tools = `<div class="msg-tools"><button data-t="react" title="Reagir">${I.smile}</button><button data-t="reply" title="Responder">${I.reply}</button><button data-t="more" title="Mais">${I.more}</button></div>`;
+  if (!grouped) return `<div class="msg first" data-id="${esc(m.id)}">${avatar(m)}<div class="msg-body">${reply}<div class="msg-head">
+    <span class="msg-author" style="color:${esc(m.color)}">${esc(m.username)}</span><span class="msg-time">${fmtDate(m.ts)}</span></div>${text}</div>${tools}</div>`;
+  return `<div class="msg" data-id="${esc(m.id)}"><div class="gutter">${fmtTime(m.ts)}</div><div class="msg-body">${text}</div>${tools}</div>`;
+}
+
+// mode: undefined = abre no fim | true = chegou mensagem nova | 'keep' = mantem a rolagem
+function renderMessages(mode) {
   const box = $('#messages');
+  const prevTop = box.scrollTop;
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   const f = findChannel(S.cid);
   const msgs = S.msgs[S.cid];
@@ -410,19 +489,124 @@ function renderMessages(appended = false) {
   else {
     let prev = null;
     for (const m of msgs) {
-      const grouped = prev && prev.userId === m.userId && m.ts - prev.ts < 5 * 60e3;
-      if (!grouped) {
-        html += `<div class="msg first">${avatar(m)}<div class="msg-body"><div class="msg-head">
-          <span class="msg-author" style="color:${esc(m.color)}">${esc(m.username)}</span><span class="msg-time">${fmtDate(m.ts)}</span></div>
-          <div class="msg-text">${linkify(m.text)}</div></div></div>`;
-      } else {
-        html += `<div class="msg"><div class="gutter">${fmtTime(m.ts)}</div><div class="msg-body"><div class="msg-text">${linkify(m.text)}</div></div></div>`;
-      }
+      const grouped = prev && !m.reply && prev.userId === m.userId && m.ts - prev.ts < 5 * 60e3;
+      html += msgHtml(m, grouped);
       prev = m;
     }
   }
   box.innerHTML = html;
-  if (!appended || nearBottom || msgs?.at(-1)?.userId === S.user?.id) box.scrollTop = box.scrollHeight;
+  if (mode === 'keep') box.scrollTop = nearBottom ? box.scrollHeight : prevTop;
+  else if (!mode || nearBottom || msgs?.at(-1)?.userId === S.user?.id) box.scrollTop = box.scrollHeight;
+}
+
+// ---------- Menu da mensagem: reagir, responder, editar, copiar, excluir ----------
+const curMsg = id => (S.msgs[S.cid] || []).find(m => m.id === id);
+const ctx = $('#ctx');
+function closeCtx() { ctx.classList.add('hidden'); ctx.innerHTML = ''; }
+function placeCtx(x, y) {
+  ctx.classList.remove('hidden');
+  const r = ctx.getBoundingClientRect();
+  ctx.style.left = Math.max(8, Math.min(x, innerWidth - r.width - 8)) + 'px';
+  ctx.style.top = Math.max(8, Math.min(y, innerHeight - r.height - 8)) + 'px';
+}
+const react = (m, emoji) => emit('message:react', { channelId: S.cid, id: m.id, emoji }).then(r => r.error && toast(r.error));
+
+function openMsgMenu(m, x, y) {
+  const mine = m.userId === S.user?.id;
+  const canDel = mine || curGroup()?.ownerId === S.user?.id;
+  ctx.innerHTML = `<div class="quick">${QUICK.map(e => `<button data-e="${e}">${e}</button>`).join('')}</div>
+    <button class="item" data-a="react">${I.smile}Adicionar reação</button>
+    <div class="sep"></div>
+    ${mine ? `<button class="item" data-a="edit">${I.edit}Editar mensagem</button>` : ''}
+    <button class="item" data-a="reply">${I.reply}Responder</button>
+    <button class="item" data-a="copy">${I.copy}Copiar texto</button>
+    ${canDel ? `<div class="sep"></div><button class="item danger" data-a="del">${I.trash}Excluir mensagem</button>` : ''}`;
+  ctx.onclick = e => {
+    const q = e.target.closest('[data-e]'), it = e.target.closest('[data-a]');
+    if (q) { closeCtx(); react(m, q.dataset.e); return; }
+    if (!it) return;
+    const act = it.dataset.a;
+    if (act === 'react') return openEmojiPicker(m, x, y);
+    closeCtx();
+    if (act === 'edit') startEdit(m);
+    if (act === 'reply') startReply(m);
+    if (act === 'copy') navigator.clipboard?.writeText(m.text).then(() => toast('Texto copiado!')).catch(() => toast('Não foi possível copiar.'));
+    if (act === 'del') confirmModal('Excluir mensagem?', m.text.slice(0, 140), 'Excluir', async () => {
+      const r = await emit('message:delete', { channelId: S.cid, id: m.id });
+      if (r.error) toast(r.error);
+    });
+  };
+  placeCtx(x, y);
+}
+function openEmojiPicker(m, x, y) {
+  ctx.innerHTML = `<div class="grid">${EMOJIS.map(e => `<button data-e="${e}">${e}</button>`).join('')}</div>`;
+  ctx.onclick = e => { const q = e.target.closest('[data-e]'); if (q) { closeCtx(); react(m, q.dataset.e); } };
+  placeCtx(x, y);
+}
+document.addEventListener('pointerdown', e => { if (!ctx.classList.contains('hidden') && !e.target.closest('#ctx')) closeCtx(); });
+
+(function wireMessages() {
+  const box = $('#messages');
+  const msgOf = el => { const d = el.closest?.('.msg[data-id]'); return d && curMsg(d.dataset.id); };
+  box.addEventListener('click', e => {
+    const m = msgOf(e.target); if (!m) return;
+    const rb = e.target.closest('[data-react]'), tb = e.target.closest('[data-t]'), go = e.target.closest('[data-goto]');
+    if (rb) return react(m, rb.dataset.react);
+    if (go) {
+      const t = box.querySelector(`.msg[data-id="${CSS.escape(go.dataset.goto)}"]`);
+      if (!t) return toast('A mensagem original não está mais disponível.');
+      t.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      t.classList.remove('flash'); void t.offsetWidth; t.classList.add('flash');
+      return;
+    }
+    if (tb) {
+      const r = tb.getBoundingClientRect();
+      if (tb.dataset.t === 'react') openEmojiPicker(m, r.right - 300, r.bottom + 4);
+      if (tb.dataset.t === 'reply') startReply(m);
+      if (tb.dataset.t === 'more') openMsgMenu(m, r.right - 220, r.bottom + 4);
+    }
+  });
+  box.addEventListener('contextmenu', e => {
+    if (e.target.closest('a')) return;
+    const m = msgOf(e.target); if (!m) return;
+    e.preventDefault();
+    openMsgMenu(m, e.clientX, e.clientY);
+  });
+  // celular: segurar o dedo na mensagem
+  let timer = null;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  box.addEventListener('touchstart', e => {
+    cancel();
+    if (e.target.closest('a,button')) return;
+    const m = msgOf(e.target); if (!m) return;
+    const t = e.touches[0];
+    timer = setTimeout(() => { navigator.vibrate?.(15); openMsgMenu(m, t.clientX, t.clientY); }, 480);
+  }, { passive: true });
+  box.addEventListener('touchmove', cancel, { passive: true });
+  box.addEventListener('touchend', cancel);
+  box.addEventListener('touchcancel', cancel);
+})();
+
+function renderComposeBar() {
+  const bar = $('#compose-bar');
+  if (!S.editing && !S.replyTo) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
+  bar.classList.remove('hidden');
+  bar.innerHTML = (S.editing ? `${I.edit}<span>Editando mensagem</span>` : `${I.reply}<span>Respondendo a <b>${esc(S.replyTo.username)}</b></span>`)
+    + `<button type="button" class="icon-btn" title="Cancelar">${I.x}</button>`;
+  bar.querySelector('button').onclick = clearCompose;
+}
+function clearCompose() {
+  const inp = $('#msg-input');
+  if (S.editing) { inp.value = ''; inp.style.height = 'auto'; }
+  S.editing = null; S.replyTo = null;
+  renderComposeBar();
+}
+function startReply(m) { S.editing = null; S.replyTo = m; renderComposeBar(); $('#msg-input').focus(); }
+function startEdit(m) {
+  S.replyTo = null; S.editing = m.id; renderComposeBar();
+  const inp = $('#msg-input');
+  inp.value = m.text; inp.focus();
+  inp.style.height = 'auto'; inp.style.height = Math.min(inp.scrollHeight, 160) + 'px';
 }
 
 // ---------------------------------------------------------------------
@@ -439,9 +623,16 @@ $('#composer').addEventListener('submit', e => { e.preventDefault(); sendMessage
 async function sendMessage() {
   const text = input.value.trim();
   if (!text || !S.cid) return;
-  input.value = ''; autosize();
-  const r = await emit('message:send', { channelId: S.cid, text });
-  if (r.error) { toast(r.error); if (!input.value) { input.value = text; autosize(); } }
+  const editing = S.editing, replyTo = S.replyTo;
+  S.editing = null; S.replyTo = null;
+  input.value = ''; autosize(); renderComposeBar();
+  const r = editing
+    ? await emit('message:edit', { channelId: S.cid, id: editing, text })
+    : await emit('message:send', { channelId: S.cid, text, replyTo: replyTo?.id });
+  if (r.error) {
+    toast(r.error);
+    if (!input.value) { input.value = text; autosize(); S.editing = editing; S.replyTo = replyTo; renderComposeBar(); }
+  }
   askNotifyPermission();
 }
 
@@ -459,7 +650,12 @@ function modal(html, onReady) {
   if (first && !isMobile()) first.focus();
 }
 function closeModal() { $('#modal').classList.add('hidden'); $('#modal-card').innerHTML = ''; }
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return;
+  if (!ctx.classList.contains('hidden')) return closeCtx();
+  if (!$('#modal').classList.contains('hidden')) return closeModal();
+  if (S.editing || S.replyTo) clearCompose();
+});
 
 function confirmModal(title, text, okLabel, onOk) {
   modal(`<h3>${esc(title)}</h3><p class="muted" style="margin:0">${esc(text)}</p>
@@ -576,18 +772,27 @@ function leaveGroupModal(g) {
      0 = microfone   1 = camera   2 = tela (video)   3 = audio da tela
    Ligar/desligar camera ou tela so troca a faixa (replaceTrack).
    ===================================================================== */
-const QUALITY = {
-  '720p30':  { w: 1280, h: 720,  fps: 30, br: 2_500_000, label: '720p 30fps' },
-  '1080p30': { w: 1920, h: 1080, fps: 30, br: 6_000_000, label: '1080p 30fps' },
-  '1080p60': { w: 1920, h: 1080, fps: 60, br: 9_000_000, label: '1080p 60fps' },
+const RES = {
+  '480p':  { w: 854,  h: 480,  br: 1_200_000 },
+  '720p':  { w: 1280, h: 720,  br: 2_500_000 },
+  '1080p': { w: 1920, h: 1080, br: 6_000_000 },
+  '1440p': { w: 2560, h: 1440, br: 10_000_000 },
 };
+const FPS = { 15: 0.6, 30: 1, 60: 1.5 }; // fps -> multiplicador de bitrate
+function curQ() {
+  const res = RES[call.res] ? call.res : '1080p';
+  const fps = FPS[call.fps] ? call.fps : 30;
+  const r = RES[res];
+  return { w: r.w, h: r.h, fps, br: Math.round(r.br * FPS[fps]), label: `${res} ${fps}fps` };
+}
 const call = {
   channelId: null, groupId: null, mySid: null,
   peers: new Map(),
   micTrack: null, camTrack: null, screenTrack: null, screenAudioTrack: null,
   micOn: store.get('nexo_mic') !== '0',
   facing: 'user',
-  quality: store.get('nexo_quality') || '1080p30',
+  res: store.get('nexo_res') || '1080p',
+  fps: Number(store.get('nexo_fps')) || 30,
   audioCtx: null, meters: new Map(), meterTimer: null,
   pinned: null, wakeLock: null, joining: false,
 };
@@ -820,7 +1025,7 @@ async function tuneSender(sender, maxBitrate, maxFramerate, pref) {
 }
 function tunePeerSenders(peer) {
   const txs = peer.pc.getTransceivers();
-  const q = QUALITY[call.quality];
+  const q = curQ();
   tuneSender(txs[1]?.sender, 1_500_000, 30, 'balanced');
   tuneSender(txs[2]?.sender, q.br, q.fps, q.fps >= 60 ? 'maintain-framerate' : 'maintain-resolution');
 }
@@ -889,7 +1094,7 @@ async function toggleScreen() {
     toast('Navegadores de celular não permitem transmitir a tela. Transmita pelo PC — no celular você assiste em Full HD normalmente.', 6000);
     return;
   }
-  const q = QUALITY[call.quality];
+  const q = curQ();
   let s;
   try {
     s = await navigator.mediaDevices.getDisplayMedia({
@@ -928,17 +1133,17 @@ function stopScreen() {
   sendState(); renderControls(); renderLocalTiles();
 }
 
-async function changeQuality(v) {
-  call.quality = v;
-  store.set('nexo_quality', v);
-  const q = QUALITY[v];
+async function changeQuality(kind, v) {
+  if (kind === 'res') { call.res = v; store.set('nexo_res', v); }
+  else { call.fps = Number(v); store.set('nexo_fps', String(v)); }
+  const q = curQ();
   if (call.screenTrack) {
     try {
       await call.screenTrack.applyConstraints({ width: { ideal: q.w, max: q.w }, height: { ideal: q.h, max: q.h }, frameRate: { ideal: q.fps, max: q.fps } });
       call.screenTrack.contentHint = q.fps >= 60 ? 'motion' : 'detail';
     } catch (e) { console.warn(e); }
     call.peers.forEach(tunePeerSenders);
-    toast('Qualidade: ' + q.label);
+    toast('Transmissão: ' + q.label);
   }
 }
 
@@ -951,14 +1156,15 @@ function renderControls() {
     <button class="cbtn ${call.camTrack ? 'on' : ''}" data-k="cam" title="${call.camTrack ? 'Desligar câmera' : 'Ligar câmera'}">${call.camTrack ? I.cam : I.camOff}</button>
     ${call.camTrack && isMobile() ? `<button class="cbtn" data-k="flip" title="Trocar câmera">${I.flip}</button>` : ''}
     <button class="cbtn ${call.screenTrack ? 'on' : ''}" data-k="screen" title="${scrOk ? (call.screenTrack ? 'Parar transmissão' : 'Transmitir tela') : 'Transmissão de tela disponível só no PC'}" ${scrOk ? '' : 'style="opacity:.45"'}>${call.screenTrack ? I.screenOff : I.screen}</button>
-    ${scrOk ? `<select class="quality" title="Qualidade da transmissão">${Object.entries(QUALITY).map(([k, q]) => `<option value="${k}" ${k === call.quality ? 'selected' : ''}>${q.label}</option>`).join('')}</select>` : ''}
+    ${scrOk ? `<select class="quality" data-q="res" title="Resolução da transmissão">${Object.keys(RES).map(k => `<option value="${k}" ${k === call.res ? 'selected' : ''}>${k}</option>`).join('')}</select>
+    <select class="quality" data-q="fps" title="Quadros por segundo da transmissão">${[60, 30, 15].map(k => `<option value="${k}" ${k === call.fps ? 'selected' : ''}>${k} fps</option>`).join('')}</select>` : ''}
     <button class="cbtn leave" data-k="leave" title="Sair da chamada">${I.phoneOff}</button>`;
   c.querySelector('[data-k=mic]').onclick = toggleMic;
   c.querySelector('[data-k=cam]').onclick = toggleCam;
   c.querySelector('[data-k=screen]').onclick = toggleScreen;
   c.querySelector('[data-k=leave]').onclick = () => leaveCall();
   c.querySelector('[data-k=flip]')?.addEventListener('click', flipCamera);
-  c.querySelector('.quality')?.addEventListener('change', e => changeQuality(e.target.value));
+  c.querySelectorAll('.quality').forEach(el => el.addEventListener('change', e => changeQuality(el.dataset.q, e.target.value)));
 }
 
 // ---------- Blocos de video ----------
@@ -1129,6 +1335,19 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 window.addEventListener('beforeunload', () => { if (call.channelId) S.socket?.emit('voice:leave'); });
+
+// ---------------------------------------------------------------------
+// Instalar como aplicativo (PC e celular)
+// ---------------------------------------------------------------------
+window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); S.installEvt = e; renderUserbar(); });
+window.addEventListener('appinstalled', () => { S.installEvt = null; renderUserbar(); toast('Nexo instalado! Procure o ícone na sua área de trabalho.'); });
+async function installApp() {
+  const ev = S.installEvt;
+  if (!ev) return;
+  ev.prompt();
+  try { await ev.userChoice; } catch {}
+  S.installEvt = null; renderUserbar();
+}
 
 // ---------------------------------------------------------------------
 // Boot

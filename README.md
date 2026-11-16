@@ -7,7 +7,16 @@ App de grupos estilo Discord, para **PC e celular**:
 - **Canais de texto** com chat em tempo real e histórico salvo
 - **Salas de voz** com **chamada de vídeo** (câmera frontal/traseira no celular)
 - **Transmissão de tela em Full HD** (1080p 30fps ou 60fps, com áudio do PC)
-- Instalável como aplicativo (PWA) no PC e no celular
+- **Mensagens:** reagir com emoji, responder, editar, copiar e excluir (botão direito no PC, segurar o dedo no celular)
+- **Lista de membros** com quem está online, offline, em voz ou transmitindo
+- Transmissão com escolha de **resolução (480p, 720p, 1080p, 1440p)** e **FPS (60, 30, 15)**
+- Instalável como aplicativo (PWA) no PC e no celular, com botão "Instalar" dentro do app
+
+## 🔄 Como atualizar o app que já está no ar
+1. Abra o seu repositório no GitHub.
+2. Clique em **Add file** e depois em **Upload files**.
+3. Arraste de novo todo o conteúdo da pasta `nexo` (os arquivos novos substituem os antigos).
+4. Clique em **Commit changes**. O Render atualiza o app sozinho em 1 a 2 minutos.
 
 ---
 
