@@ -270,6 +270,9 @@ function connect() {
   sock.on('connect_error', e => { if (e.message === 'auth') logout(); });
 
   sock.on('init', d => {
+    // saiu versão nova do Nexo: atualiza (se estiver em chamada, espera sair)
+    if (S.ver && d.ver && d.ver !== S.ver) return newVersion();
+    S.ver = d.ver;
     if (away.on) sock.emit('presence:away', { away: true });   // voltou a conectar parado
     S.user = d.user;
     S.groups = d.groups;
@@ -487,6 +490,19 @@ function connect() {
 
 // ---------- Não lidas ----------
 // Tira o aviso do canal e avisa o servidor (assim some nos outros aparelhos também)
+function newVersion() {
+  S.updatePending = true;
+  if (call.channelId) {
+    toast('Saiu uma versão nova do Nexo. Ela entra quando você sair da chamada.', 8000);
+    return;
+  }
+  reloadForUpdate();
+}
+async function reloadForUpdate() {
+  try { await (await navigator.serviceWorker?.getRegistration())?.update(); } catch {}
+  location.reload();
+}
+
 function markRead(cid) {
   if (!cid) return false;
   const had = S.unread.delete(cid);
@@ -769,7 +785,7 @@ function renderChannels() {
     const people = g.voice?.[c.id] || [];
     const active = call.channelId === c.id && S.view === 'voice';
     return `<button class="ch ${active ? 'active' : ''}" data-vid="${c.id}" data-ch="${c.id}">${I.speaker}<span class="label">${esc(c.name)}</span>${del(c)}</button>`
-      + (people.length ? `<div class="vusers">` + dedupeVoice(people).map(p => `<div class="vuser" data-sid="${esc(p.sid)}" data-uid="${esc(p.userId)}" title="Opções">${avatar(p, 'sm')}<span class="nm">${esc(nameOf(p.userId, p.username))}</span>
+      + (people.length ? `<div class="vusers">` + dedupeVoice(people).map(p => `<div class="vuser${isSpeaking(p.userId) ? ' speaking' : ''}" data-sid="${esc(p.sid)}" data-uid="${esc(p.userId)}" title="Opções">${avatar(p, 'sm')}<span class="nm">${esc(nameOf(p.userId, p.username))}</span>
         ${p.screen ? '<span class="live">AO VIVO</span>' : ''}${p.cam ? I.cam : ''}${p.fdeaf || p.deaf ? `<span class="${p.fdeaf ? 'fm' : ''}">${I.headOff}</span>` : ''}${p.fmute ? `<span class="fm">${I.micOff}</span>` : (p.mic ? '' : I.micOff)}</div>`).join('') + `</div>` : '');
   };
   const add = (type, cat = '') => canCh ? `<button class="icon-btn" data-add="${type}" data-cat="${cat}" title="Criar canal">${I.plus}</button>` : '';
@@ -1685,6 +1701,7 @@ function stopKeepAlive() {
 function leaveCall() {
   if (!call.channelId) return;
   SFX.stop('back');
+  if (S.updatePending) setTimeout(reloadForUpdate, 600);
   const was = call.channelId;
   call.rejoin = null;
   call.fmute = false;
@@ -1697,6 +1714,8 @@ function leaveCall() {
   for (const sid of [...call.peers.keys()]) removePeer(sid);
   stopLocalTracks();
   call.meters.clear();
+  speakState.clear();
+  for (const uid of [...speakUid.keys()]) { speakUid.delete(uid); paintSpeaking(uid); }
   clearInterval(call.meterTimer); call.meterTimer = null;
   call.channelId = null; call.groupId = null; call.pinned = null; call.hadPeer = false;
   call.recvOverride.clear();
@@ -1847,6 +1866,7 @@ function removePeer(sid) {
   peer.screenAudio.srcObject = null; peer.screenAudio.remove();
   call.peers.delete(sid);
   call.meters.delete(sid);
+  setSpeaking(sid, peer.userId, false);
   document.getElementById('t-cam-' + sid)?.remove();
   document.getElementById('t-scr-' + sid)?.remove();
   if (call.pinned && call.pinned.endsWith(sid)) call.pinned = null;
@@ -2589,13 +2609,23 @@ function startMeterLoop() {
 }
 // Guarda quem está falando, para só mexer na tela quando muda
 const speakState = new Map();
+const speakUid = new Map();   // uid -> aparelhos dessa pessoa falando agora
+const isSpeaking = uid => (speakUid.get(uid)?.size || 0) > 0;
 function setSpeaking(key, uid, on) {
   if (speakState.get(key) === on) return;
   speakState.set(key, on);
-  const tile = document.getElementById('t-cam-' + key);
-  tile?.classList.toggle('speaking', on);
-  animIn(tile, on);
-  if (uid) document.querySelectorAll(`.vuser[data-uid="${CSS.escape(uid)}"]`).forEach(r => animIn(r, on));
+  if (!uid) return;
+  const set = speakUid.get(uid) || speakUid.set(uid, new Set()).get(uid);
+  if (on) set.add(key); else set.delete(key);
+  paintSpeaking(uid);
+}
+function paintSpeaking(uid) {
+  const on = isSpeaking(uid);
+  // quadro da câmera da pessoa (o meu é t-cam-me; com 2 aparelhos, é o quadro único dela)
+  const tiles = uid === S.user?.id ? [document.getElementById('t-cam-me')]
+    : [...document.querySelectorAll(`#tiles .tile[data-uid="${CSS.escape(uid)}"]:not(.screen):not(.mydev)`)];
+  for (const t of tiles) { if (!t) continue; t.classList.toggle('speaking', on); animIn(t, on); }
+  document.querySelectorAll(`.vuser[data-uid="${CSS.escape(uid)}"]`).forEach(r => { r.classList.toggle('speaking', on); animIn(r, on); });
 }
 
 const blocked = new Set();
@@ -2790,9 +2820,8 @@ function openProfile(uid, fallback) {
       <div class="pf-h">Sobre mim</div><div class="pf-bio">${u.bio ? linkify(u.bio) : '<span class="muted">Nada por aqui ainda.</span>'}</div>
       ${since ? `<div class="pf-h">Membro desde</div><div>${since}</div>` : ''}
       <div class="pf-h">Situação</div><div class="pres-line"><i class="pres ${presOf(u)}"></i>${presOf(u) === 'offline' ? 'Offline' : (PRESENCE_LABEL[presOf(u)] || 'Online')}</div></div>`}
-    <div class="acts">${me || u.gone ? '' : friendBtnHtml(uid)}${me ? '<button class="btn primary" id="pf-edit">Editar perfil</button>' : (u.gone || !canTalkTo(uid) ? '' : '<button class="btn primary" id="pf-dm">Enviar mensagem</button>')}<button class="btn" data-close>Fechar</button></div>`,
+    ${me || u.gone ? '' : `<div class="acts">${friendBtnHtml(uid)}${canTalkTo(uid) ? '<button class="btn primary" id="pf-dm">Enviar mensagem</button>' : ''}</div>`}`,
     card => {
-      const b = card.querySelector('#pf-edit'); if (b) b.onclick = editProfile;
       const d = card.querySelector('#pf-dm'); if (d) d.onclick = () => { closeModal(); openDM(uid); };
       wireFriendBtn(card, uid);
       wireProfileExtras(card);

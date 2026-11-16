@@ -896,3 +896,11 @@ body.cinema .toasts { bottom: 110px; }
 .rail-dm .badge, .g-btn .badge { min-width: 10px; height: 16px; line-height: 16px; padding: 0 4px; font-size: 11px; border-radius: 9px; right: -3px; bottom: -3px; }
 .ch .cnt ~ * { margin-left: 6px !important; }
 .ch:has(.cnt):not(:hover) .del { display: none; }
+
+/* ---------- Quem está falando fica aceso ---------- */
+.vuser .av { transition: box-shadow .12s; }
+.vuser.speaking .av { box-shadow: 0 0 0 2px var(--bg2), 0 0 0 4px var(--green); }
+.vuser.speaking .nm { color: var(--txt); }
+.tile .ph .av { transition: box-shadow .12s, transform .12s; }
+.tile.speaking .ph .av { box-shadow: 0 0 0 4px var(--bg2), 0 0 0 8px var(--green), 0 0 30px rgba(61, 220, 151, .45); transform: scale(1.03); }
+@media (prefers-reduced-motion: reduce) { .tile.speaking .ph .av { transform: none; } }

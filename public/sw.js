@@ -1,6 +1,6 @@
 // Service worker: instala o Nexo como app e mostra a nossa tela de carregamento
 // (com a logo) enquanto o servidor acorda, no lugar da página do Render.
-const CACHE = 'nexo-v16';
+const CACHE = 'nexo-v17';
 const SHELL = ['/', '/index.html', '/style.css', '/app.js', '/settings.js', '/features.js', '/account.js', '/sounds.js', '/manifest.json',
   '/loading.html', '/icons/icon-192.png', '/icons/icon-512.png',
   '/fonts/onest-latin.woff2', '/fonts/onest-latin-ext.woff2', '/fonts/bricolage-latin.woff2', '/fonts/bricolage-latin-ext.woff2'];

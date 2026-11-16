@@ -8,6 +8,16 @@ const https = require('https');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+// Versão do app = "impressão digital" dos arquivos do site. Muda a cada atualização;
+// quem está com o Nexo aberto recebe a nova e o app se atualiza sozinho.
+const APP_VERSION = (() => {
+  const h = crypto.createHash('sha1');
+  const dir = require('path').join(__dirname, 'public');
+  try {
+    for (const f of require('fs').readdirSync(dir).sort()) if (/\.(js|css|html)$/.test(f)) h.update(f).update(require('fs').readFileSync(require('path').join(dir, f)));
+  } catch {}
+  return h.digest('hex').slice(0, 10);
+})();
 const { Server } = require('socket.io');
 
 const PORT = process.env.PORT || 3000;
@@ -769,6 +779,7 @@ io.on('connection', socket => {
     dms: (db.dms[u.id] || []).map(o => dmEntry(u.id, o)).filter(Boolean),
     friends: friendState(u.id),
     unread: unreadFor(u.id),
+    ver: APP_VERSION,
   });
 
   // Marcou como lido: vale para todos os aparelhos da pessoa
