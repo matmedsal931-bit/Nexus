@@ -15,7 +15,8 @@ const PERM_INFO = [
   ['ban', 'Banir membros', 'Remover membros de forma permanente, sem poder voltar.'],
   ['manageMessages', 'Gerenciar mensagens', 'Excluir mensagens de outros membros.'],
   ['viewAudit', 'Ver o registro de auditoria', 'Ver quem fez quais alterações no grupo.'],
-  ['muteMembers', 'Silenciar membros', 'Desligar o microfone de outras pessoas nas salas de voz.'],
+  ['muteMembers', 'Silenciar voz no servidor', 'Desligar o microfone de outra pessoa para todo mundo na sala.'],
+  ['deafenMembers', 'Desativar áudio no servidor', 'Fazer com que a pessoa não ouça ninguém (e também não fale) na sala.'],
   ['moveMembers', 'Mover membros', 'Arrastar ou mover pessoas de uma sala de voz para outra.'],
   ['disconnectMembers', 'Desconectar membros', 'Tirar alguém da chamada de voz.'],
   ['sendMessages', 'Enviar mensagens', 'Escrever nos canais de texto.'],
@@ -55,7 +56,14 @@ const canOpenSettings = g => ['manageGroup', 'manageRoles', 'manageEmoji', 'kick
 const tabAllowed = (g, t) => t.id && (t.owner ? g.ownerId === S.user.id : !t.perm || can(g, t.perm));
 const outranksMe = (g, uid) => uid !== S.user.id && uid !== g.ownerId && rankOf(g, S.user.id) < rankOf(g, uid);
 const roleChips = (g, uid) => rolesOf(g, uid).map(r => `<span class="chip"><i style="background:${esc(r.color || '#99aab5')}"></i>${esc(r.name)}</span>`).join('');
-const gIcon = (g, cls = '') => `<div class="g-ic ${cls}">${g.iv ? `<img src="/api/gicon/${esc(g.id)}?v=${g.iv}" alt="">` : esc(g.name.split(/\s+/).map(w => w[0]).join('').slice(0, 3).toUpperCase())}</div>`;
+const gInitials = g => esc(g.name.split(/\s+/).map(w => w[0]).join('').slice(0, 3).toUpperCase());
+// No perfil do grupo o GIF se mexe; no resto do app ele fica parado.
+const gIcon = (g, cls = '', anim = false) => `<div class="g-ic ${cls}">${g.iv
+  ? `<img src="/api/gicon/${esc(g.id)}?v=${g.iv}${anim && g.igif ? '&a=1' : ''}" alt="">`
+  : gInitials(g)}</div>`;
+const gBannerStyle = (g, anim = false) => g.bv
+  ? `background:center/cover no-repeat url("/api/gbanner/${esc(g.id)}?v=${g.bv}${anim && g.bgif ? '&a=1' : ''}")`
+  : `background:${g.banner ? esc(g.banner) : 'linear-gradient(#f2f3f5, #dcdde1)'}`;
 
 // ---------------------------------------------------------------------
 function openSettings(gid, tab) {
@@ -103,7 +111,7 @@ function renderSettings() {
 
 // ---------- Perfil do grupo ----------
 function secPerfil(g, body) {
-  const st = { icon: undefined, banner: g.banner || '' };
+  const st = { icon: undefined, banner: g.banner || '', iconImg: null, bannerImg: null, rmBanner: false };
   const on = g.members.filter(m => m.online || m.id === S.user.id).length;
   body.innerHTML = `<h2>Perfil do grupo</h2>
     <p class="muted">Personalize como o grupo aparece para os membros e nos convites.</p>
@@ -111,22 +119,28 @@ function secPerfil(g, body) {
       <label>Nome<input id="sp-name" maxlength="40" value="${esc(g.name)}"></label>
       <div class="set-block"><div class="pf-h">Ícone</div><p class="muted small">Use uma imagem quadrada, de pelo menos 512×512.</p>
         <div class="row l"><button class="btn primary" id="sp-pick">Alterar o ícone do grupo</button><button class="btn" id="sp-rm">Remover o ícone</button></div>
+        <p class="muted small">Pode ser GIF (até 3 MB): ele se mexe aqui no perfil do grupo e fica parado no resto do app.</p>
         <input type="file" id="sp-file" accept="image/*" hidden></div>
-      <div class="set-block"><div class="pf-h">Faixa</div>
+      <div class="set-block"><div class="pf-h">Capa</div>
+        <div class="row l"><button class="btn primary" id="sp-bpick">Enviar imagem ou GIF</button><button class="btn" id="sp-brm">Usar só cor</button></div>
+        <p class="muted small">Tamanho bom: 960×540. O GIF se mexe aqui no perfil do grupo.</p>
+        <input type="file" id="sp-bfile" accept="image/*" hidden>
         <div class="banners" id="sp-banners">${BANNERS.map(c => `<button data-c="${c}" style="background:${c ? `linear-gradient(${c}, ${c}cc)` : 'linear-gradient(#f2f3f5, #dcdde1)'}"></button>`).join('')}</div></div>
       <label>Descrição<textarea id="sp-desc" rows="3" maxlength="300" placeholder="Como o grupo começou? Por que as pessoas devem participar?">${esc(g.desc || '')}</textarea></label>
       <div class="row l"><button class="btn primary" id="sp-save">Salvar alterações</button></div>
     </div>
-    <div class="g-card"><div class="g-card-banner" id="sp-cb"></div><div class="g-card-ic" id="sp-ci">${gIcon(g, 'lg')}</div>
+    <div class="g-card"><div class="g-card-banner" id="sp-cb"></div><div class="g-card-ic" id="sp-ci">${gIcon(g, 'lg', true)}</div>
       <div class="g-card-body"><b id="sp-cn"></b><div class="muted small"><span class="dot"></span> ${on} online &nbsp; <span class="dot off"></span> ${g.members.length} ${g.members.length === 1 ? 'membro' : 'membros'}</div>
       <div class="muted small">Desde ${new Date(g.created).toLocaleDateString('pt-BR', { month: 'short', year: 'numeric' })}</div><div class="small" id="sp-cd"></div></div></div></div>`;
   const q = s => body.querySelector(s);
   const preview = () => {
-    q('#sp-cb').style.background = st.banner || 'linear-gradient(#f2f3f5, #dcdde1)';
+    if (st.bannerImg) q('#sp-cb').style.cssText = `background:center/cover no-repeat url("${st.bannerImg.preview}")`;
+    else if (g.bv && !st.rmBanner) q('#sp-cb').style.cssText = gBannerStyle(g, true);
+    else q('#sp-cb').style.cssText = `background:${st.banner || 'linear-gradient(#f2f3f5, #dcdde1)'}`;
     q('#sp-cn').textContent = q('#sp-name').value || g.name;
     q('#sp-cd').textContent = q('#sp-desc').value;
     body.querySelectorAll('#sp-banners button').forEach(b => b.classList.toggle('sel', b.dataset.c === st.banner));
-    if (st.icon) q('#sp-ci').innerHTML = `<div class="g-ic lg"><img src="${st.icon}" alt=""></div>`;
+    if (st.iconImg) q('#sp-ci').innerHTML = `<div class="g-ic lg"><img src="${st.iconImg.preview}" alt=""></div>`;
     else if (st.icon === null) q('#sp-ci').innerHTML = gIcon({ ...g, iv: 0 }, 'lg');
   };
   q('#sp-name').oninput = preview; q('#sp-desc').oninput = preview;
@@ -134,13 +148,29 @@ function secPerfil(g, body) {
   q('#sp-pick').onclick = () => q('#sp-file').click();
   q('#sp-file').onchange = async e => {
     const f = e.target.files[0]; if (!f) return;
-    try { st.icon = await fileToAvatar(f); preview(); } catch { toast('Não consegui abrir essa imagem.'); }
+    q('#sp-save').disabled = true;
+    try { st.iconImg = await prepareImage(f, { square: true, max: 256 }); st.icon = undefined; preview(); }
+    catch (err) { toast(err.message || 'Não consegui abrir essa imagem.'); }
+    q('#sp-save').disabled = false;
   };
-  q('#sp-rm').onclick = () => { st.icon = null; preview(); };
+  q('#sp-rm').onclick = () => { st.icon = null; st.iconImg = null; preview(); };
+  q('#sp-bpick').onclick = () => q('#sp-bfile').click();
+  q('#sp-bfile').onchange = async e => {
+    const f = e.target.files[0]; if (!f) return;
+    q('#sp-save').disabled = true;
+    try { st.bannerImg = await prepareImage(f, { square: false, max: 960, gifMax: 4 * 1024 * 1024 }); st.rmBanner = false; preview(); }
+    catch (err) { toast(err.message || 'Não consegui abrir essa imagem.'); }
+    q('#sp-save').disabled = false;
+  };
+  q('#sp-brm').onclick = () => { st.bannerImg = null; st.rmBanner = true; preview(); };
   q('#sp-save').onclick = async () => {
     q('#sp-save').disabled = true;
     document.activeElement?.blur();
-    const r = await act('group:edit', { groupId: g.id, name: q('#sp-name').value, desc: q('#sp-desc').value, banner: st.banner, icon: st.icon }, 'Perfil do grupo salvo!');
+    const ic = st.iconImg ? { iconId: st.iconImg.id, iconStillId: st.iconImg.stillId, iconGif: st.iconImg.gif } : {};
+    const bn = st.bannerImg ? { bannerId: st.bannerImg.id, bannerStillId: st.bannerImg.stillId, bannerGif: st.bannerImg.gif }
+      : (st.rmBanner ? { bannerImg: null } : {});
+    const r = await act('group:edit', { groupId: g.id, name: q('#sp-name').value, desc: q('#sp-desc').value, banner: st.banner,
+      icon: st.iconImg ? undefined : st.icon, ...ic, ...bn }, 'Perfil do grupo salvo!');
     if (!r && q('#sp-save')) q('#sp-save').disabled = false;
   };
   preview();

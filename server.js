@@ -119,7 +119,7 @@ const PRESENCES = ['online', 'idle', 'dnd', 'invisible'];
 function publicUser(u) {
   return { id: u.id, username: u.username, name: u.display || u.username, color: u.color,
     banner: u.banner || '', bio: u.bio || '', status: u.status || '',
-    av: u.avatar ? (u.av || 1) : 0, created: u.created };
+    av: (u.avatar || u.avId || u.avStillId) ? (u.av || 1) : 0, gif: !!u.avGif, created: u.created };
 }
 // "invisivel" aparece como offline para os outros
 const isOnline = id => online.has(id) && (db.users[id]?.presence || 'online') !== 'invisible';
@@ -129,7 +129,7 @@ const memberView = u => ({ ...publicUser(u), online: isOnline(u.id), presence: v
 // Cargos e permissoes
 // ------------------------------------------------------------------
 const PERMS = ['admin', 'manageGroup', 'manageChannels', 'manageRoles', 'manageEmoji', 'kick', 'ban',
-  'manageMessages', 'viewAudit', 'muteMembers', 'moveMembers', 'disconnectMembers',
+  'manageMessages', 'viewAudit', 'muteMembers', 'deafenMembers', 'moveMembers', 'disconnectMembers',
   'sendMessages', 'addReactions', 'connect', 'video'];
 const DEFAULT_EVERYONE = { sendMessages: true, addReactions: true, connect: true, video: true };
 
@@ -171,6 +171,24 @@ function audit(g, u, text) {
   g.audit.unshift({ ts: Date.now(), by: u.username, text });
   if (g.audit.length > 200) g.audit.length = 200;
 }
+// Serve uma imagem do grupo ou do perfil.
+// Sem ?a=1 manda a versão parada; com ?a=1 manda o GIF animado.
+async function sendImage(req, res, rec) {
+  if (!rec) return res.status(404).end();
+  const wantAnim = req.query.a === '1';
+  const fid = wantAnim ? (rec.id || rec.stillId) : (rec.stillId || rec.id);
+  if (fid && db.files[fid]) {
+    const f = await getFile(fid);
+    if (f) {
+      res.set('Content-Type', f.mime);
+      res.set('Cache-Control', 'public, max-age=31536000, immutable');
+      return res.send(f.buf);
+    }
+  }
+  if (rec.dataUrl) return sendDataUrl(res, rec.dataUrl, 'public, max-age=31536000, immutable');
+  return res.status(404).end();
+}
+
 function sendDataUrl(res, dataUrl, cache) {
   const m = dataUrl && /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(dataUrl);
   if (!m) return res.status(404).end();
@@ -260,14 +278,20 @@ app.get('/api/config', (req, res) => {
 // Foto de perfil (guardada como data URL no banco)
 app.get('/api/avatar/:id', (req, res) => {
   const u = db.users[req.params.id];
-  const m = u?.avatar && /^data:(image\/(?:jpeg|png|webp));base64,(.+)$/.exec(u.avatar);
-  if (!m) return res.status(404).end();
-  res.set('Content-Type', m[1]);
-  res.set('Cache-Control', 'public, max-age=31536000, immutable');
-  res.send(Buffer.from(m[2], 'base64'));
+  if (!u) return res.status(404).end();
+  sendImage(req, res, { id: u.avId, stillId: u.avStillId, dataUrl: u.avatar });
 });
 
-app.get('/api/gicon/:gid', (req, res) => sendDataUrl(res, db.groups[req.params.gid]?.icon, 'public, max-age=31536000, immutable'));
+app.get('/api/gicon/:gid', (req, res) => {
+  const g = db.groups[req.params.gid];
+  if (!g) return res.status(404).end();
+  sendImage(req, res, { id: g.iconId, stillId: g.iconStillId, dataUrl: g.icon });
+});
+app.get('/api/gbanner/:gid', (req, res) => {
+  const g = db.groups[req.params.gid];
+  if (!g) return res.status(404).end();
+  sendImage(req, res, { id: g.bannerId, stillId: g.bannerStillId });
+});
 app.get('/api/emoji/:gid/:id', (req, res) => {
   const e = db.groups[req.params.gid]?.emojis?.find(x => x.id === req.params.id);
   sendDataUrl(res, e?.data, 'public, max-age=31536000, immutable');
@@ -380,7 +404,9 @@ function voicePresence(g) {
 function groupView(g) {
   return {
     id: g.id, name: g.name, ownerId: g.ownerId, invite: g.invite, channels: g.channels,
-    desc: g.desc, banner: g.banner, iv: g.icon ? (g.iv || 1) : 0, created: g.created,
+    desc: g.desc, banner: g.banner, created: g.created,
+    iv: (g.icon || g.iconId || g.iconStillId) ? (g.iv || 1) : 0, igif: !!g.iconGif,
+    bv: g.bannerStillId ? (g.bv || 1) : 0, bgif: !!g.bannerGif,
     roles: g.roles, everyone: g.everyone, memberRoles: g.memberRoles, joined: g.joined,
     categories: g.categories, sys: g.sys,
     emojis: g.emojis.map(e => ({ id: e.id, name: e.name })),
@@ -398,6 +424,21 @@ function sysMessage(g, text) {
   if (arr.length > MAX_MSGS_PER_CHANNEL) arr.splice(0, arr.length - MAX_MSGS_PER_CHANNEL);
   io.to('g:' + g.id).emit('message', { groupId: g.id, channelId: c.id, msg });
 }
+// Aviso dentro da conversa privada ("Ligação recusada", etc.)
+function dmSys(channelId, text) {
+  const pr = dmPeers(channelId);
+  if (!pr) return;
+  const arr = (db.messages[channelId] ||= []);
+  const msg = { id: newId(), sys: true, text, ts: Date.now() };
+  arr.push(msg);
+  if (arr.length > MAX_MSGS_PER_CHANNEL) arr.splice(0, arr.length - MAX_MSGS_PER_CHANNEL);
+  save();
+  for (const x of pr) {
+    io.to('u:' + x).emit('message', { channelId, msg, dm: true });
+    io.to('u:' + x).emit('dm:update', { entry: dmEntry(x, pr.find(y => y !== x) || x) });
+  }
+}
+
 // Tira alguem do grupo (saiu, foi expulso ou banido)
 function removeMember(g, uid, reason) {
   g.members = g.members.filter(m => m !== uid);
@@ -431,9 +472,22 @@ function dmPeers(cid) {
   return p.length === 2 && p.every(x => db.users[x]) ? p : null;
 }
 // Onde a mensagem vive: um canal de grupo ou uma conversa privada
+// Quem pode abrir conversa com quem: amigos, quem divide um grupo
+// ou quem já tem uma conversa aberta. Não existe busca de desconhecidos.
+const shareGroup = (a, b) => Object.values(db.groups).some(g => g.members.includes(a) && g.members.includes(b));
+const hasDm = (a, b) => (db.dms[a] || []).includes(b);
+function canDm(a, b) {
+  if (a === b || !db.users[b]) return false;
+  return areFriends(a, b) || shareGroup(a, b) || hasDm(a, b);
+}
+
 function channelCtx(cid, uid) {
   const p = dmPeers(cid);
-  if (p) return p.includes(uid) ? { dm: true, peers: p, other: p.find(x => x !== uid) || uid } : null;
+  if (p) {
+    if (!p.includes(uid)) return null;
+    const other = p.find(x => x !== uid) || uid;
+    return canDm(uid, other) ? { dm: true, peers: p, other } : null;
+  }
   const f = findChannel(cid);
   return f && f.g.members.includes(uid) ? { g: f.g, c: f.c } : null;
 }
@@ -498,6 +552,15 @@ io.on('connection', socket => {
   });
 
   // ---------- Perfil ----------
+  // Confere se o id veio mesmo de um upload de imagem
+  const imgFile = (id, gifOk) => {
+    const f = id && db.files[id];
+    if (!f || !f.mime.startsWith('image/')) return null;
+    if (!gifOk && f.mime === 'image/gif') return null;
+    return f;
+  };
+  const dropFiles = (...ids) => ids.forEach(x => { if (x) delFile(x); });
+
   socket.on('profile:update', (d = {}, cb) => {
     if (typeof d.display === 'string') {
       const n = cleanName(d.display, 32);
@@ -514,7 +577,16 @@ io.on('connection', socket => {
     if (hex(d.banner)) u.banner = d.banner;
     if (typeof d.bio === 'string') u.bio = d.bio.trim().slice(0, 190);
     if (typeof d.status === 'string') u.status = cleanName(d.status, 60);
-    if (d.avatar === null) { delete u.avatar; }
+    if (d.avatarId || d.avatarStillId) {
+      if (!imgFile(d.avatarId, true) || !imgFile(d.avatarStillId, false))
+        return reply(cb, { error: 'Imagem inválida. Tente outra.' });
+      dropFiles(u.avId, u.avStillId);
+      delete u.avatar;
+      u.avId = d.avatarId;
+      u.avStillId = d.avatarStillId;
+      u.avGif = !!d.avatarGif;
+      u.av = (u.av || 0) + 1;
+    } else if (d.avatar === null) { dropFiles(u.avId, u.avStillId); delete u.avatar; delete u.avId; delete u.avStillId; delete u.avGif; }
     else if (typeof d.avatar === 'string') {
       if (!/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/.test(d.avatar) || d.avatar.length > 90000)
         return reply(cb, { error: 'Imagem inválida ou grande demais.' });
@@ -584,9 +656,9 @@ io.on('connection', socket => {
   // ---------- Amigos ----------
   socket.on('friend:add', ({ query } = {}, cb) => {
     const q = String(query || '').trim().replace(/^@/, '').toLowerCase();
-    if (!q) return reply(cb, { error: 'Digite o nome de usuário.' });
+    if (!q) return reply(cb, { error: 'Digite o nome de usuário ou o ID.' });
     const other = Object.values(db.users).find(x => x.username.toLowerCase() === q || x.id === q);
-    if (!other) return reply(cb, { error: 'Não achei ninguém com esse nome de usuário.' });
+    if (!other) return reply(cb, { error: 'Não achei ninguém com esse nome de usuário ou ID. Confira se está escrito igualzinho.' });
     if (other.id === u.id) return reply(cb, { error: 'Esse é você. 🙂' });
     if (areFriends(u.id, other.id)) return reply(cb, { error: `Você e ${other.display || other.username} já são amigos.` });
     const mine = freqOf(u.id), theirs = freqOf(other.id);
@@ -633,6 +705,8 @@ io.on('connection', socket => {
   socket.on('dm:open', ({ userId } = {}, cb) => {
     const other = db.users[userId];
     if (!other || userId === u.id) return reply(cb, { error: 'Pessoa não encontrada.' });
+    if (!canDm(u.id, userId))
+      return reply(cb, { error: 'Você só pode conversar com amigos ou com quem está em um grupo seu. Envie um pedido de amizade primeiro.' });
     linkDm(u.id, userId);
     save();
     io.to('u:' + userId).emit('dm:update', { entry: dmEntry(userId, u.id) });
@@ -643,15 +717,6 @@ io.on('connection', socket => {
     db.dms[u.id] = (db.dms[u.id] || []).filter(x => x !== userId);
     save();
     reply(cb, { ok: true });
-  });
-
-  socket.on('user:find', ({ query } = {}, cb) => {
-    const q = cleanName(query, 24).toLowerCase();
-    if (q.length < 2) return reply(cb, { users: [] });
-    const out = Object.values(db.users)
-      .filter(x => x.id !== u.id && (x.username.toLowerCase().includes(q) || (x.display || '').toLowerCase().includes(q)))
-      .slice(0, 12).map(memberView);
-    reply(cb, { users: out });
   });
 
   // ---------- Configuracoes do grupo ----------
@@ -675,7 +740,23 @@ io.on('connection', socket => {
     }
     if (typeof d.desc === 'string') g.desc = d.desc.trim().slice(0, 300);
     if (d.banner === '' || isHex(d.banner)) g.banner = d.banner;
-    if (d.icon === null) delete g.icon;
+    if (d.iconId || d.iconStillId) {
+      if (!imgFile(d.iconId, true) || !imgFile(d.iconStillId, false))
+        return reply(cb, { error: 'Imagem inválida. Tente outra.' });
+      dropFiles(g.iconId, g.iconStillId);
+      delete g.icon;
+      g.iconId = d.iconId; g.iconStillId = d.iconStillId; g.iconGif = !!d.iconGif;
+      g.iv = (g.iv || 0) + 1;
+    }
+    if (d.bannerId || d.bannerStillId) {
+      if (!imgFile(d.bannerId, true) || !imgFile(d.bannerStillId, false))
+        return reply(cb, { error: 'Imagem inválida. Tente outra.' });
+      dropFiles(g.bannerId, g.bannerStillId);
+      g.bannerId = d.bannerId; g.bannerStillId = d.bannerStillId; g.bannerGif = !!d.bannerGif;
+      g.bv = (g.bv || 0) + 1;
+    }
+    if (d.bannerImg === null) { dropFiles(g.bannerId, g.bannerStillId); delete g.bannerId; delete g.bannerStillId; delete g.bannerGif; }
+    if (d.icon === null) { dropFiles(g.iconId, g.iconStillId); delete g.icon; delete g.iconId; delete g.iconStillId; delete g.iconGif; }
     else if (d.icon !== undefined) {
       if (!isImg(d.icon, 90000)) return reply(cb, { error: 'Imagem inválida ou grande demais.' });
       g.icon = d.icon; g.iv = (g.iv || 0) + 1;
@@ -1000,7 +1081,17 @@ io.on('connection', socket => {
     socket.leave('v:' + cid);
     const pr = dmPeers(cid);
     // se quem estava chamando desistiu, para de tocar do outro lado
-    if (pr && !voice.get(cid)) for (const x of pr) io.to('u:' + x).emit('dm:ring-stop', { channelId: cid });
+    if (pr && !voice.get(cid)) {
+      for (const x of pr) io.to('u:' + x).emit('dm:ring-stop', { channelId: cid });
+      if (r && !r.declined) {
+        if (!r.answered) dmSys(cid, '📞 Ligação não atendida.');
+        else {
+          const secs = Math.round((Date.now() - (r.startedAt || Date.now())) / 1000);
+          const dur = secs < 60 ? `${secs} s` : `${Math.floor(secs / 60)} min`;
+          dmSys(cid, `📞 Ligação encerrada · ${dur}`);
+        }
+      }
+    }
     notifyVoice(cid);
   }
 
@@ -1009,6 +1100,7 @@ io.on('connection', socket => {
     let f = null;
     if (pr) {
       if (!pr.includes(u.id)) return reply(cb, { error: 'Conversa não encontrada.' });
+      if (!canDm(u.id, pr.find(x => x !== u.id))) return reply(cb, { error: 'Vocês não podem se falar.' });
     } else {
       f = findChannel(channelId);
       if (!f || !f.g.members.includes(u.id) || f.c.type !== 'voice') return reply(cb, { error: 'Sala não encontrada.' });
@@ -1020,7 +1112,7 @@ io.on('connection', socket => {
     voice.set(channelId, r);
     const peers = [...r.entries()].map(([sid, p]) => ({ sid, ...p }));
     const dupe = [...r.values()].some(p => p.userId === u.id);   // mesma conta em outro aparelho
-    const me = { userId: u.id, username: u.username, color: u.color, mic: false, cam: false, screen: false, fmute: false, dupe };
+    const me = { userId: u.id, username: u.username, color: u.color, mic: false, cam: false, screen: false, deaf: false, fmute: false, fdeaf: false, dupe };
     r.set(socket.id, me);
     currentVoice = channelId;
     socket.join('v:' + channelId);
@@ -1030,6 +1122,7 @@ io.on('connection', socket => {
       const other = pr.find(x => x !== u.id);
       // primeiro a entrar numa conversa privada = está ligando
       const alone = [...r.values()].every(x => x.userId === u.id);
+      if (!alone && !r.answered) { r.answered = true; r.startedAt = Date.now(); }
       if (alone) io.to('u:' + other).emit('dm:ring', { channelId, from: publicUser(u) });
       else io.to('u:' + other).emit('dm:ring-stop', { channelId });
       io.to('u:' + u.id).emit('dm:ring-stop', { channelId });
@@ -1042,8 +1135,11 @@ io.on('connection', socket => {
     const pr = dmPeers(channelId);
     if (!pr || !pr.includes(u.id)) return reply(cb, { error: 'Conversa não encontrada.' });
     const other = pr.find(x => x !== u.id);
+    const r = voice.get(channelId);
+    if (r) r.declined = true;
     io.to('u:' + u.id).emit('dm:ring-stop', { channelId });
     io.to('u:' + other).emit('dm:declined', { channelId, by: publicUser(u) });
+    dmSys(channelId, '📞 Ligação recusada.');
     reply(cb, { ok: true });
   });
 
@@ -1053,8 +1149,8 @@ io.on('connection', socket => {
     if (!currentVoice) return;
     const p = voice.get(currentVoice)?.get(socket.id);
     if (!p) return;
-    for (const k of ['mic', 'cam', 'screen']) if (typeof st[k] === 'boolean') p[k] = st[k];
-    if (p.fmute) p.mic = false;
+    for (const k of ['mic', 'cam', 'screen', 'deaf']) if (typeof st[k] === 'boolean') p[k] = st[k];
+    if (p.fmute || p.fdeaf) p.mic = false;
     const fv = dmPeers(currentVoice) ? null : findChannel(currentVoice);
     if (fv && !can(fv.g, u.id, 'video')) { p.cam = false; p.screen = false; }
     socket.to('v:' + currentVoice).emit('voice:state', { sid: socket.id, ...p });
@@ -1070,7 +1166,9 @@ io.on('connection', socket => {
     const f = findChannel(cid);
     if (!f || !f.g.members.includes(u.id)) return reply(cb, { error: 'Sem permissão.' });
     const g = f.g;
-    const need = action === 'move' ? 'moveMembers' : action === 'disconnect' ? 'disconnectMembers' : 'muteMembers';
+    const need = action === 'move' ? 'moveMembers'
+      : action === 'disconnect' ? 'disconnectMembers'
+      : (action === 'deafen' || action === 'undeafen') ? 'deafenMembers' : 'muteMembers';
     if (!can(g, u.id, need)) return reply(cb, { error: 'Você não tem permissão para isso.' });
     if (p.userId !== u.id && (p.userId === g.ownerId || rank(g, u.id) >= rank(g, p.userId)))
       return reply(cb, { error: 'Essa pessoa está no mesmo nível ou acima do seu.' });
@@ -1080,7 +1178,13 @@ io.on('connection', socket => {
       if (p.fmute) p.mic = false;
       io.to(sid).emit('voice:force', { action, by: u.username });
       io.to('v:' + cid).emit('voice:state', { sid, ...p });
-      audit(g, u, `${p.fmute ? 'silenciou' : 'tirou o silêncio de'} ${who} na sala ${f.c.name}`);
+      audit(g, u, `${p.fmute ? 'silenciou a voz de' : 'tirou o silêncio de'} ${who} na sala ${f.c.name}`);
+    } else if (action === 'deafen' || action === 'undeafen') {
+      p.fdeaf = action === 'deafen';
+      if (p.fdeaf) p.mic = false;
+      io.to(sid).emit('voice:force', { action, by: u.username });
+      io.to('v:' + cid).emit('voice:state', { sid, ...p });
+      audit(g, u, `${p.fdeaf ? 'desativou o áudio de' : 'reativou o áudio de'} ${who} na sala ${f.c.name}`);
     } else if (action === 'disconnect') {
       io.to(sid).emit('voice:force', { action, by: u.username });
       dropVoice(cid, sid);

@@ -542,3 +542,10 @@ input[type=color] { width: 44px; height: 34px; padding: 2px; }
 .dm-row .p.incall { color: var(--green); font-weight: 600; }
 .icon-btn.live-btn { color: var(--green); }
 .ring-card .av.xl { width: 96px; height: 96px; font-size: 36px; }
+
+/* ---------- Capa do grupo como imagem ---------- */
+.side-head.has-banner { position: relative; }
+.side-head.has-banner::after { content: ""; position: absolute; inset: 0; background: linear-gradient(rgba(0,0,0,.15), rgba(0,0,0,.6)); pointer-events: none; }
+.side-head.has-banner > * { position: relative; z-index: 1; }
+.g-card-banner { background-position: center; background-size: cover; }
+.set-form .row.l .muted.small { flex: 1 1 100%; }

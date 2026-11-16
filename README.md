@@ -7,13 +7,16 @@ App de grupos estilo Discord, para **PC e celular**:
 - **Canais de texto** com chat em tempo real e histórico salvo
 - **Salas de voz** com **chamada de vídeo** (câmera frontal/traseira no celular)
 - **Transmissão de tela em Full HD** (1080p 30fps ou 60fps, com áudio do PC)
-- **Ligação privada** dentro da conversa: voz, vídeo e transmissão de tela, com toque de chamada, atender/recusar e aviso de "ocupado"
+- **Foto de perfil e capa de grupo em GIF:** a foto da pessoa se mexe só enquanto ela fala na chamada; o GIF do grupo se mexe só na tela de perfil do grupo
+- **Moderação de voz separada:** "Silenciar voz no servidor" e "Desativar áudio no servidor", cada uma com a sua permissão de cargo, além do botão de fone para você mesmo
+- **Ligação privada** dentro da conversa: voz, vídeo e transmissão de tela, com toque de chamada, atender/recusar e aviso de "ocupado"; a conversa registra "Ligação recusada", "não atendida" e a duração
 - **Tela de carregamento própria** com a logo do Nexo, no lugar da página do Render, quando o servidor está acordando
-- **Amigos:** pedido por nome de usuário ou por ID, pendentes, aceitar/recusar, lista com quem está online
+- **Sem busca de pessoas:** ninguém encontra estranhos. O pedido de amizade é pelo **nome de usuário exato** ou pelo **ID**, e só dá para conversar com amigos ou com quem está em um grupo seu
+ pedido por nome de usuário ou por ID, pendentes, aceitar/recusar, lista com quem está online
 - **Na chamada:** volume de cada pessoa separado (voz e transmissão, até 200%), e **cada um escolhe a resolução que recebe** da live sem mexer na dos outros
-- **Moderação de voz:** silenciar para todos, desconectar da chamada e mover de sala — por cargo ou como administrador
 - **Vários aparelhos na mesma conta** na mesma chamada: aparece um perfil só, mas dá para transmitir a tela dos dois ao mesmo tempo
 - **Arrastar:** mover canais entre categorias e mover pessoas entre salas de voz (só com permissão)
+- **Amigos:** pedido por nome de usuário exato ou por ID, pendentes, aceitar/recusar, lista com quem está online
 - **Mensagens diretas** (conversa privada), com lista de conversas e busca de pessoas
 - **Enviar fotos e arquivos** (até 8 MB): arraste, cole ou use o botão +; imagens aparecem na conversa
 - **Perfil:** nome exibido editável separado do @login, foto, cores, "sobre mim" e status (Disponível, Ausente, Não perturbar, Invisível)
