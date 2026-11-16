@@ -283,6 +283,7 @@ function mountPlayer(box, autoplay = true) {
         <div class="vp-vol"><button class="vp-b vp-mute" title="Volume (M)">${I.vol}</button><input type="range" min="0" max="1" step="0.05" value="${VP.vol}" aria-label="Volume"></div>
         <button class="vp-b vp-speed" title="Velocidade">1x</button>
         <button class="vp-b vp-big2" title="Abrir maior">${I.expand}</button>
+        <button class="vp-exitfs" title="Sair da tela cheia (Esc)">${I.x}</button>
         <button class="vp-b vp-fs" title="Tela cheia (F)">${I.screen}</button>
       </div>
     </div>
@@ -336,9 +337,17 @@ function mountPlayer(box, autoplay = true) {
   const seek = q('.vp-seek input');
   seek.addEventListener('input', () => { box._seeking = true; const d = v.duration || Number(box.dataset.dur); q('.vp-cur').style.width = seek.value / 10 + '%'; q('.vp-time').textContent = `${fmtDur(seek.value / 1000 * d)} / ${fmtDur(d)}`; });
   seek.addEventListener('change', () => { const d = v.duration || Number(box.dataset.dur); if (d) v.currentTime = seek.value / 1000 * d; box._seeking = false; });
-  const fs = () => { if (document.fullscreenElement === box) document.exitFullscreen().catch(() => {}); else (box.requestFullscreen?.() || v.webkitEnterFullscreen?.())?.catch?.(() => {}); };
+  const fsEl = () => document.fullscreenElement || document.webkitFullscreenElement;
+  const fs = () => {
+    if (fsEl()) (document.exitFullscreen || document.webkitExitFullscreen).call(document)?.catch?.(() => {});
+    else (box.requestFullscreen?.() || box.webkitRequestFullscreen?.() || v.webkitEnterFullscreen?.())?.catch?.(() => {});
+  };
+  const fsIco = () => { const on = fsEl() === box; box.classList.toggle('fs', on); q('.vp-fs').title = on ? 'Sair da tela cheia (Esc)' : 'Tela cheia (F)'; };
+  document.addEventListener('fullscreenchange', fsIco); document.addEventListener('webkitfullscreenchange', fsIco);
   q('.vp-fs').onclick = fs;
-  q('.vp-big2').onclick = () => openVideoBig(box);
+  q('.vp-exitfs').onclick = fs;
+  // setas: abre maior — e, se já estiver grande, volta para o chat (não abre de novo por cima)
+  q('.vp-big2').onclick = () => box.classList.contains('big') ? box._closeBig?.() : openVideoBig(box);
   // controles somem com o mouse parado enquanto toca
   let t = null;
   const wake = () => { box.classList.remove('idle'); clearTimeout(t); if (!v.paused) t = setTimeout(() => box.classList.add('idle'), 2200); };
@@ -358,6 +367,7 @@ function mountPlayer(box, autoplay = true) {
 }
 // "Abrir maior": o MESMO vídeo vai para uma camada por cima do chat (continua de onde estava)
 function openVideoBig(box) {
+  if (box.classList.contains('big')) return box._closeBig?.();
   const lb = $('#lightbox');
   // mover o vídeo de lugar faz o navegador pausar: lembra se estava tocando e continua
   const v = box._v, wasPlaying = v && !v.paused;
@@ -372,13 +382,20 @@ function openVideoBig(box) {
   lb.classList.remove('hidden');
   resume();
   const close = () => {
+    if (!box._closeBig) return;
+    box._closeBig = null;
     const playing = v && !v.paused;
+    const fe = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fe) (document.exitFullscreen || document.webkitExitFullscreen).call(document)?.catch?.(() => {});
     box.classList.remove('big');
-    ph.replaceWith(box);
+    if (ph.isConnected) ph.replaceWith(box);
     lb.classList.add('hidden'); lb.innerHTML = '';
     if (playing) v.play().catch(() => {});
     document.removeEventListener('keydown', esc1, true);
+    box.querySelector('.vp-big2')?.setAttribute('title', 'Abrir maior');
   };
+  box._closeBig = close;
+  box.querySelector('.vp-big2')?.setAttribute('title', 'Voltar para o chat');
   const esc1 = e => { if (e.key === 'Escape' && !document.fullscreenElement) { e.stopPropagation(); close(); } };
   document.addEventListener('keydown', esc1, true);
   lb.onclick = e => { if (e.target === lb || e.target.closest('.vp-close')) close(); };

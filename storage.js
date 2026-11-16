@@ -67,7 +67,10 @@ function createStorage({ dataDir, hasDb }) {
       const cors = `<?xml version="1.0" encoding="UTF-8"?><CORSConfiguration><CORSRule>${origins.map(o => `<AllowedOrigin>${xml(o)}</AllowedOrigin>`).join('')}<AllowedMethod>PUT</AllowedMethod><AllowedMethod>GET</AllowedMethod><AllowedMethod>HEAD</AllowedMethod><AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>3600</MaxAgeSeconds></CORSRule></CORSConfiguration>`;
       const md5 = crypto.createHash('md5').update(cors).digest('base64');
       try { await s3req(base + '?cors', { method: 'PUT', body: cors, headers: { 'Content-Type': 'application/xml', 'Content-MD5': md5 } }); }
-      catch (e) { console.warn('Não consegui configurar o CORS do armazenamento (faça no painel do R2):', e.message); }
+      catch (e) {
+        if (/403/.test(e.message)) console.log('CORS: a chave não pode mudar as configurações do bucket (normal) — use a regra CORS do painel do R2.');
+        else console.warn('Não consegui configurar o CORS do armazenamento (faça no painel do R2):', e.message);
+      }
     },
     // ---- envio em partes ----
     async start(key, mime) {
