@@ -462,7 +462,16 @@ function connect() {
   });
 
   sock.on('voice:peer-joined', p => { if (call.channelId) { SFX.stop('back'); addPeer(p); playJoinSound(true, true); } });
-  sock.on('voice:peer-left', ({ sid }) => { if (call.peers.has(sid)) { removePeer(sid); playJoinSound(false, true); } });
+  sock.on('voice:peer-left', ({ sid }) => {
+    if (!call.peers.has(sid)) return;
+    const mine = call.peers.get(sid).userId === S.user?.id;
+    removePeer(sid); playJoinSound(false, true);
+    if (mine && !multiDevice() && call.deaf && call.micOn) {
+      call.micOn = false; if (call.micTrack) call.micTrack.enabled = false;
+      sendState(); renderControls(); renderCallbar(); renderLocalTiles();
+      toast('Seu outro aparelho saiu da chamada. Como o áudio deste está desligado, o microfone também foi desligado.', 6000);
+    }
+  });
   // um moderador silenciou ou desativou o áudio de alguém: a sala toda ouve
   sock.on('voice:modsound', ({ action }) => { if (call.channelId) SFX.play(action === 'mute' || action === 'deafen' ? 'modMute' : 'modUnmute'); });
   // ausente automático (vale quando todos os aparelhos estão parados)
@@ -474,7 +483,7 @@ function connect() {
   sock.on('voice:self', async ({ action, from }) => {
     if (!call.channelId) return;
     if (action === 'mic-off') await setMicOn(false);
-    else if (action === 'mic-on') { if (call.fmute || call.fdeaf) return; if (call.deaf) setDeafOn(false); await setMicOn(true); }
+    else if (action === 'mic-on') { if (call.fmute || call.fdeaf) return; await setMicOn(true); }
     else if (action === 'deaf-on') setDeafOn(true);
     else if (action === 'deaf-off') setDeafOn(false);
     const what = { 'mic-off': 'desligou o microfone', 'mic-on': 'ligou o microfone', 'deaf-on': 'desativou o áudio', 'deaf-off': 'reativou o áudio' }[action];
@@ -741,6 +750,7 @@ function dedupeVoice(people) {
     if (!cur) { out.set(p.userId, { ...p }); continue; }
     cur.mic = cur.mic || p.mic; cur.cam = cur.cam || p.cam; cur.screen = cur.screen || p.screen;
     cur.fmute = cur.fmute && p.fmute;
+    cur.deaf = cur.deaf && p.deaf; cur.fdeaf = cur.fdeaf && p.fdeaf;
     if (p.cam || p.mic) cur.sid = p.sid;
   }
   return [...out.values()];
@@ -1775,7 +1785,7 @@ async function controlMyDevice(peer, action) {
 }
 
 function sendState() {
-  S.socket?.emit('voice:state', { mic: !!call.micTrack && call.micOn && !isDeaf(), cam: !!call.camTrack, screen: !!call.screenTrack, deaf: isDeaf() });
+  S.socket?.emit('voice:state', { mic: !!call.micTrack && call.micOn && (!isDeaf() || micWhileDeaf()), cam: !!call.camTrack, screen: !!call.screenTrack, deaf: isDeaf() });
 }
 
 // ---------- Peers ----------
@@ -1808,6 +1818,9 @@ function setVolume(uid, kind, v) {
   for (const p of call.peers.values()) if (p.userId === uid) applyVolume(p);
 }
 const isDeaf = () => call.deaf || call.fdeaf;
+const multiDevice = () => call.channelId && [...call.peers.values()].some(p => p.userId === S.user?.id);
+// o microfone pode ficar aberto com o áudio desligado? (só com vários aparelhos)
+const micWhileDeaf = () => !call.fdeaf && multiDevice();
 function applyVolume(peer) {
   // não tocamos o nosso próprio áudio (outro aparelho na mesma conta) para não dar eco
   const mine = peer.userId === S.user?.id;
@@ -1819,7 +1832,7 @@ function applyAllVolumes() { for (const p of call.peers.values()) applyVolume(p)
 function toggleDeaf() {
   if (call.fdeaf) return toast('Um moderador desativou o seu áudio nesta sala.');
   call.deaf = !call.deaf;
-  if (call.deaf) { call.micOn = false; if (call.micTrack) call.micTrack.enabled = false; }
+  if (call.deaf && !multiDevice()) { call.micOn = false; if (call.micTrack) call.micTrack.enabled = false; }   // 1 aparelho: desligar o áudio desliga o mic
   SFX.play(call.deaf ? 'deafen' : 'undeafen');
   applyAllVolumes();
   sendState(); renderControls(); renderCallbar(); renderTiles();
@@ -2069,7 +2082,7 @@ async function toggleMic() {
   if (!call.channelId) return;
   if (call.fmute && !call.micOn) return toast('Um moderador silenciou o seu microfone nesta sala.');
   if (call.fdeaf) return toast('Um moderador desativou o seu áudio nesta sala.');
-  if (call.deaf && !call.micOn) { call.deaf = false; applyAllVolumes(); }
+  if (call.deaf && !call.micOn && !multiDevice()) { call.deaf = false; applyAllVolumes(); }   // 1 aparelho: ligar o mic religa o áudio
   if (!call.micTrack) {
     try {
       call.micTrack = await acquireMic();
@@ -2445,7 +2458,7 @@ function renderTiles() {
         stream: primary.camStream,
         showVideo: primary.state.cam && primary.camStream.getVideoTracks().length > 0,
         label: nameOf(uid, primary.username) + (list.length > 1 ? ` (${list.length} aparelhos)` : ''),
-        micOff: !primary.state.mic, deaf: primary.state.deaf || primary.state.fdeaf, vol: v.mic, peer: primary,
+        micOff: !list.some(d => d.state.mic), deaf: list.every(d => d.state.deaf || d.state.fdeaf), vol: v.mic, peer: primary,
       });
     }
     let n = 0;
