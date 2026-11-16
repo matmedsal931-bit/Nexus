@@ -70,8 +70,12 @@
       <section id="chat-view" class="chat-view hidden">
         <div class="messages" id="messages"></div>
         <div class="compose-bar hidden" id="compose-bar"></div>
+        <div class="att-bar hidden" id="att-bar"></div>
+        <input type="file" id="att-file" multiple hidden>
         <form class="composer" id="composer">
           <textarea id="msg-input" rows="1" maxlength="2000" placeholder="Mensagem" enterkeyhint="send"></textarea>
+          <button class="emo-btn" type="button" id="att-btn" aria-label="Enviar um arquivo"></button>
+          <button class="emo-btn" type="button" id="emo-btn" aria-label="Emoji"></button>
           <button class="send-btn" type="submit" aria-label="Enviar" id="send-btn"></button>
         </form>
       </section>
@@ -84,6 +88,12 @@
     <aside class="members" id="members"></aside>
   </div>
 
+  <div id="settings" class="settings hidden">
+    <nav class="set-nav" id="set-nav"></nav>
+    <div class="set-body" id="set-body"></div>
+    <button class="set-close" id="set-close" title="Fechar (Esc)">✕</button>
+  </div>
+  <div id="lightbox" class="lightbox hidden"></div>
   <div id="ctx" class="ctx hidden"></div>
   <div id="modal" class="modal hidden"><div class="modal-card" id="modal-card"></div></div>
   <div id="toasts" class="toasts"></div>
@@ -92,5 +102,6 @@
 
   <script src="/socket.io/socket.io.min.js"></script>
   <script src="/app.js"></script>
+  <script src="/settings.js"></script>
 </body>
 </html>

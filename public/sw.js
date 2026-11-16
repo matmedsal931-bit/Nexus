@@ -1,6 +1,6 @@
 // Service worker: permite instalar o Nexo como app (PC e celular)
-const CACHE = 'nexo-v4';
-const SHELL = ['/', '/index.html', '/style.css', '/app.js', '/manifest.json', '/icons/icon-192.png'];
+const CACHE = 'nexo-v6';
+const SHELL = ['/', '/index.html', '/style.css', '/app.js', '/settings.js', '/manifest.json', '/icons/icon-192.png'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

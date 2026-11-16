@@ -7,14 +7,18 @@ App de grupos estilo Discord, para **PC e celular**:
 - **Canais de texto** com chat em tempo real e histórico salvo
 - **Salas de voz** com **chamada de vídeo** (câmera frontal/traseira no celular)
 - **Transmissão de tela em Full HD** (1080p 30fps ou 60fps, com áudio do PC)
+- **Mensagens diretas** (conversa privada), com lista de conversas e busca de pessoas
+- **Enviar fotos e arquivos** (até 8 MB): arraste, cole ou use o botão +; imagens aparecem na conversa
+- **Perfil:** nome exibido editável separado do @login, foto, cores, "sobre mim" e status (Disponível, Ausente, Não perturbar, Invisível)
 - **Mensagens:** reagir com emoji, responder, editar, copiar e excluir (botão direito no PC, segurar o dedo no celular)
-- **Perfil:** clique em qualquer pessoa para ver o perfil; cada um edita o seu (foto, cor do nome, capa, status e "sobre mim")
+- **Configurações do grupo** (clique no nome do grupo): perfil do grupo (nome, ícone, faixa, descrição), mensagens de boas-vindas, emojis personalizados, membros, **cargos com permissões**, convites, banimentos e registro de auditoria
+- **Categorias** de canais, expulsar e banir membros
 - **Lista de membros** com quem está online, offline, em voz ou transmitindo
 - Transmissão com escolha de **resolução (480p, 720p, 1080p, 1440p)** e **FPS (60, 30, 15)**
 - Instalável como aplicativo (PWA) no PC e no celular, com botão "Instalar" dentro do app
 
 ## 🤖 App para Android (APK)
-O arquivo `public/nexo.apk` é o app Android. Depois de publicar, ele fica disponível em
+O arquivo `public/nexo.apk` é o app Android (versão 1.1). Depois de publicar, ele fica disponível em
 `https://SEU-LINK.onrender.com/nexo.apk`. Abra esse endereço no celular, baixe e instale
 (o Android pede para permitir a instalação de "fontes desconhecidas").
 

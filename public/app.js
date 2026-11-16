@@ -44,6 +44,12 @@ const I = {
   users: P('<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>'),
   download: P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>'),
   x: P('<path d="M18 6 6 18M6 6l12 12"/>'),
+  chev: P('<path d="m6 9 6 6 6-6"/>'),
+  gear: P('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.8 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.8H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+  home: P('<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5"/><path d="M9 21v-6h6v6"/>'),
+  file: P('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>'),
+  paperclip: P('<circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/>'),
+  folder: P('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2zM12 11v6M9 14h6"/>'),
 };
 
 // ---------------------------------------------------------------------
@@ -57,6 +63,10 @@ const S = {
   cid: null,              // canal de texto aberto
   view: 'chat',           // chat | voice | empty
   msgs: {},               // channelId -> [msg]
+  users: {},              // cache de perfis (inclui quem não está nos seus grupos)
+  dms: [],                // conversas privadas
+  dmPeer: null,           // com quem estou conversando agora
+  atts: [],               // arquivos escolhidos, esperando envio
   unread: new Set(),      // channelIds com mensagens novas
   ice: [{ urls: 'stun:stun.l.google.com:19302' }],
   socket: null,
@@ -66,18 +76,64 @@ const S = {
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const linkify = t => esc(t).replace(/(https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"])/g, '<a href="$1" target="_blank" rel="noopener noreferrer">$1</a>');
 const initial = n => esc((n || '?').trim().charAt(0) || '?');
+// ---- Cargos e permissoes (mesma regra do servidor, usada so para a interface) ----
+const PERM_KEYS = ['admin', 'manageGroup', 'manageChannels', 'manageRoles', 'manageEmoji', 'kick', 'ban',
+  'manageMessages', 'viewAudit', 'sendMessages', 'addReactions', 'connect', 'video'];
+function permsOf(g, uid) {
+  const out = {};
+  if (!g) return out;
+  if (g.ownerId === uid) { for (const k of PERM_KEYS) out[k] = true; return out; }
+  Object.assign(out, g.everyone || {});
+  const mine = g.memberRoles?.[uid] || [];
+  for (const r of g.roles || []) if (mine.includes(r.id)) for (const k of PERM_KEYS) if (r.perms[k]) out[k] = true;
+  if (out.admin) for (const k of PERM_KEYS) out[k] = true;
+  return out;
+}
+const can = (g, p, uid = S.user?.id) => !!permsOf(g, uid)[p];
+function rankOf(g, uid) {
+  if (g.ownerId === uid) return -1;
+  const mine = g.memberRoles?.[uid] || [];
+  const i = (g.roles || []).findIndex(r => mine.includes(r.id));
+  return i < 0 ? (g.roles || []).length : i;
+}
+const rolesOf = (g, uid) => (g.roles || []).filter(r => (g.memberRoles?.[uid] || []).includes(r.id));
+// Cor do nome: a do cargo mais alto com cor; se nao tiver, a do perfil
+function nameColor(uid, fallback, g = curGroup()) {
+  const r = g && rolesOf(g, uid).find(x => x.color);
+  return r ? r.color : (userById(uid)?.color || fallback || '#e8e9ee');
+}
+// Emojis personalizados do grupo: ":nome:" vira imagem
+const cemojiImg = (g, e) => `<img class="cemoji" src="/api/emoji/${esc(g.id)}/${esc(e.id)}" alt=":${esc(e.name)}:" title=":${esc(e.name)}:" draggable="false">`;
+function emojiHtml(e, g = curGroup()) {
+  const m = /^:([a-z0-9_]{2,24}):$/.exec(e);
+  const ce = m && g?.emojis?.find(x => x.name === m[1]);
+  return ce ? cemojiImg(g, ce) : esc(e);
+}
+function richText(t) {
+  const g = curGroup();
+  const html = linkify(t);
+  if (!g?.emojis?.length) return html;
+  return html.replace(/:([a-z0-9_]{2,24}):/g, (all, n) => { const ce = g.emojis.find(x => x.name === n); return ce ? cemojiImg(g, ce) : all; });
+}
+
 // Perfil atual de um usuario (cor e foto sempre atualizadas)
 function userById(id) {
   if (!id) return null;
   if (S.user?.id === id) return S.user;
+  if (S.users[id]) return S.users[id];
   for (const g of S.groups) { const m = g.members.find(x => x.id === id); if (m) return m; }
   return null;
 }
+// Nome que aparece: o nome exibido (editável), ou o de login
+const nameOf = (uid, fb) => userById(uid)?.name || fb || '?';
+function cacheUser(u) { if (u?.id && u.id !== S.user?.id) S.users[u.id] = { ...S.users[u.id], ...u }; }
+const presOf = u => (u?.id === S.user?.id ? (S.user.presence === 'invisible' ? 'offline' : S.user.presence || 'online') : (u?.presence || (u?.online ? 'online' : 'offline')));
+const presDot = u => `<i class="pres ${presOf(u)}"></i>`;
 function avatar(u, cls = '') {
   const id = u.userId ?? u.id;
   const p = userById(id) || u;
-  const inner = p.av ? `<img src="/api/avatar/${esc(id)}?v=${p.av}" alt="" draggable="false">` : initial(p.username || u.username);
-  return `<div class="av ${cls}" style="background:${esc(p.color || u.color || '#555')}">${inner}</div>`;
+  const inner = p.av ? `<img src="/api/avatar/${esc(id)}?v=${p.av}" alt="" draggable="false">` : initial(p.name || p.username || u.username);
+  return `<div class="av ${cls}" style="background:${esc(p.color || u.color || '#555')}">${inner}${cls.includes('nodot') ? '' : presDot(p)}</div>`;
 }
 const isMobile = () => matchMedia('(max-width: 820px)').matches;
 const fmtTime = ts => new Date(ts).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
@@ -147,6 +203,7 @@ $('#auth-form').addEventListener('submit', async e => {
 });
 
 function logout() {
+  closeSettings();
   if (call.channelId) leaveCall();
   if (S.token) fetch('/api/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: S.token }) }).catch(() => {});
   S.socket?.disconnect();
@@ -177,7 +234,12 @@ function connect() {
   sock.on('init', d => {
     S.user = d.user;
     S.groups = d.groups;
-    if (!group(S.gid)) S.gid = S.groups[0]?.id || null;
+    S.dms = d.dms || [];
+    S.users = {};
+    S.dms.forEach(x => cacheUser(x.user));
+    d.groups.forEach(g => g.members.forEach(cacheUser));
+    if (S.gid === '@me' && !S.dms.length) S.gid = S.groups[0]?.id || '@me';
+    if (S.gid !== '@me' && !group(S.gid)) S.gid = S.groups[0]?.id || (S.dms.length ? '@me' : null);
     // recarrega historico apos reconectar
     S.msgs = {};
     renderAll();
@@ -187,20 +249,23 @@ function connect() {
   });
 
   sock.on('group:update', g => {
+    g.members.forEach(cacheUser);
     const i = S.groups.findIndex(x => x.id === g.id);
     if (i >= 0) S.groups[i] = g; else S.groups.push(g);
     if (S.cid && !findChannel(S.cid)) { S.cid = null; if (S.gid === g.id) openDefaultChannel(); }
     renderAll();
     if (S.cid && S.view === 'chat') renderMessages('keep');
+    window.onGroupUpdate?.(g);
   });
 
-  sock.on('group:removed', ({ groupId }) => {
+  sock.on('group:removed', ({ groupId, reason }) => {
     const g = group(groupId);
     S.groups = S.groups.filter(x => x.id !== groupId);
     if (call.groupId === groupId) leaveCall();
     if (S.gid === groupId) { S.gid = S.groups[0]?.id || null; S.cid = null; openDefaultChannel(); }
     renderAll();
-    if (g) toast(`Você saiu de "${g.name}"`);
+    window.onGroupUpdate?.({ id: groupId });
+    if (g) toast(reason || `Você saiu de "${g.name}"`, reason ? 6000 : 3200);
   });
 
   sock.on('voice:presence', ({ groupId, voice }) => {
@@ -211,21 +276,33 @@ function connect() {
     renderMembers();
   });
 
-  sock.on('message', ({ groupId, channelId, msg }) => {
+  sock.on('message', ({ groupId, channelId, msg, dm }) => {
     if (S.msgs[channelId]) S.msgs[channelId].push(msg);
     const visible = channelId === S.cid && S.view === 'chat' && document.visibilityState === 'visible';
     if (channelId === S.cid) renderMessages(true);
     if (!visible && msg.userId !== S.user?.id) {
       S.unread.add(channelId);
       renderRail(); renderChannels();
-      notify(msg, groupId, channelId);
+      if (!msg.sys) notify(msg, dm ? '@me' : groupId, channelId, dm ? msg.userId : null);
     }
   });
 
-  sock.on('profile:me', u => { S.user = u; renderAll(); });
-  sock.on('presence', ({ userId, online }) => {
-    for (const g of S.groups) for (const m of g.members) if (m.id === userId) m.online = online;
+  sock.on('profile:me', u => { S.user = u; renderAll(); if (S.cid) renderMessages('keep'); });
+  sock.on('dm:update', ({ entry }) => {
+    if (!entry) return;
+    cacheUser(entry.user);
+    const i = S.dms.findIndex(x => x.user.id === entry.user.id);
+    if (i >= 0) S.dms[i] = entry; else S.dms.push(entry);
+    renderRail();
+    if (S.gid === '@me') renderChannels();
+  });
+  sock.on('presence', ({ userId, online, presence }) => {
+    for (const g of S.groups) for (const m of g.members) if (m.id === userId) { m.online = online; m.presence = presence; }
+    for (const d of S.dms) if (d.user.id === userId) { d.user.online = online; d.user.presence = presence; }
+    if (S.users[userId]) { S.users[userId].online = online; S.users[userId].presence = presence; }
     renderMembers();
+    if (S.gid === '@me') renderChannels();
+    if (S.dmPeer === userId) renderHeader();
   });
   sock.on('message:edit', ({ channelId, id, text }) => {
     const m = (S.msgs[channelId] || []).find(x => x.id === id);
@@ -253,13 +330,16 @@ function connect() {
   sock.on('signal', ({ from, data }) => onSignal(from, data));
 }
 
-function notify(msg, groupId, channelId) {
+function notify(msg, groupId, channelId, dmPeer) {
   try {
     if (document.visibilityState === 'visible') return;
     if (!('Notification' in window) || Notification.permission !== 'granted') return;
     const f = findChannel(channelId);
-    const n = new Notification(`${msg.username} em #${f?.c.name || ''}`, { body: msg.text.slice(0, 140), icon: '/icons/icon-192.png', tag: channelId });
-    n.onclick = () => { window.focus(); S.gid = groupId; openTextChannel(channelId); n.close(); };
+    const who = nameOf(msg.userId, msg.username);
+    const title = dmPeer ? who : `${who} em #${f?.c.name || ''}`;
+    const body = msg.text || (msg.att ? '📎 ' + msg.att.name : '');
+    const n = new Notification(title, { body: body.slice(0, 140), icon: '/icons/icon-192.png', tag: channelId });
+    n.onclick = () => { window.focus(); if (dmPeer) openDM(dmPeer); else { S.gid = groupId; openTextChannel(channelId); } n.close(); };
   } catch {}
 }
 function askNotifyPermission() {
@@ -270,6 +350,11 @@ function askNotifyPermission() {
 // Navegacao
 // ---------------------------------------------------------------------
 function openDefaultChannel() {
+  if (S.gid === '@me') {
+    const d = S.dms.find(x => x.user.id === S.dmPeer) || S.dms[0];
+    if (d) openDM(d.user.id); else { S.cid = null; S.dmPeer = null; setView('empty'); renderAll(); }
+    return;
+  }
   const g = curGroup();
   if (!g) { S.cid = null; setView('empty'); return; }
   const last = store.get('nexo_cid_' + g.id);
@@ -280,15 +365,35 @@ function openDefaultChannel() {
 
 function selectGroup(gid) {
   S.gid = gid;
+  if (gid !== '@me') S.dmPeer = null;
   store.set('nexo_gid', gid);
   S.cid = null;
   openDefaultChannel();
   renderAll();
 }
 
+// Abre uma conversa privada
+async function openDM(userId) {
+  const r = await emit('dm:open', { userId });
+  if (r.error) return toast(r.error);
+  cacheUser(r.user);
+  if (!S.dms.some(x => x.user.id === userId)) S.dms.push({ user: r.user, last: null });
+  S.msgs[r.channelId] = r.messages;
+  S.gid = '@me'; S.dmPeer = userId; S.cid = r.channelId;
+  S.unread.delete(r.channelId);
+  store.set('nexo_gid', '@me');
+  clearCompose();
+  setView('chat');
+  renderMessages();
+  closeDrawer();
+  renderAll();
+  if (!isMobile()) $('#msg-input').focus();
+}
+
 function openTextChannel(cid) {
   const f = findChannel(cid);
   if (!f) return;
+  S.dmPeer = null;
   S.gid = f.g.id;
   S.cid = cid;
   clearCompose();
@@ -332,12 +437,21 @@ function renderAll() { renderRail(); renderChannels(); renderHeader(); renderUse
 function renderRail() {
   const rail = $('#rail');
   rail.innerHTML = '';
+  const dmUnread = S.dms.some(d => S.unread.has(dmChannelId(d.user.id)));
+  const home = document.createElement('button');
+  home.className = 'rail-home' + (S.gid === '@me' ? '' : ' off') + (dmUnread ? ' unread' : '');
+  home.title = 'Mensagens diretas';
+  home.innerHTML = I.home;
+  home.onclick = () => selectGroup('@me');
+  rail.appendChild(home);
+  if (S.groups.length) { const sp = document.createElement('div'); sp.className = 'rail-sep'; rail.appendChild(sp); }
   for (const g of S.groups) {
     const b = document.createElement('button');
     const unread = g.channels.some(c => S.unread.has(c.id));
     b.className = 'g-btn' + (g.id === S.gid ? ' active' : '') + (unread ? ' unread' : '');
     b.title = g.name;
-    b.textContent = g.name.split(/\s+/).map(w => w[0]).join('').slice(0, 3).toUpperCase();
+    if (g.iv) b.innerHTML = `<img src="/api/gicon/${esc(g.id)}?v=${g.iv}" alt="">`;
+    else b.textContent = g.name.split(/\s+/).map(w => w[0]).join('').slice(0, 3).toUpperCase();
     b.onclick = () => selectGroup(g.id);
     rail.appendChild(b);
   }
@@ -350,54 +464,136 @@ function renderRail() {
   rail.appendChild(add);
 }
 
+const dmChannelId = other => 'd' + [S.user.id, other].sort().join('_');
+
 function renderChannels() {
-  const g = curGroup();
   const head = $('#side-head'), list = $('#channels');
+  if (S.gid === '@me') return renderDMs(head, list);
+  const g = curGroup();
   if (!g) {
+    head.style.background = '';
     head.innerHTML = `<span class="name">Nexo</span>`;
     list.innerHTML = `<p class="muted" style="padding:10px">Você ainda não está em nenhum grupo.</p>`;
     return;
   }
-  const owner = g.ownerId === S.user?.id;
-  head.innerHTML = `<span class="name" title="${esc(g.name)}">${esc(g.name)}</span>
-    <span><button class="icon-btn" data-act="invite" title="Convidar pessoas">${I.invite}</button>
-    <button class="icon-btn" data-act="leave" title="${owner ? 'Apagar grupo' : 'Sair do grupo'}">${owner ? I.trash : I.leave}</button></span>`;
+  const canCh = can(g, 'manageChannels');
+  head.style.background = g.banner ? `linear-gradient(${g.banner}, ${g.banner}55)` : '';
+  head.innerHTML = `<button class="g-menu" id="g-menu" title="Menu do grupo"><span class="name">${esc(g.name)}</span>${I.chev}</button>
+    <button class="icon-btn" data-act="invite" title="Convidar pessoas">${I.invite}</button>`;
+  head.querySelector('#g-menu').onclick = e => openGroupMenu(g, e.currentTarget);
   head.querySelector('[data-act=invite]').onclick = () => inviteModal(g);
-  head.querySelector('[data-act=leave]').onclick = () => leaveGroupModal(g);
 
-  const text = g.channels.filter(c => c.type === 'text');
-  const voiceCh = g.channels.filter(c => c.type === 'voice');
-  let html = `<div class="sec">Canais de texto ${owner ? `<button class="icon-btn" data-add="text" title="Criar canal">${I.plus}</button>` : ''}</div>`;
-  for (const c of text) {
-    const active = c.id === S.cid && S.view === 'chat';
-    html += `<button class="ch ${active ? 'active' : ''} ${S.unread.has(c.id) ? 'unread' : ''}" data-cid="${c.id}">${I.hash}<span class="label">${esc(c.name)}</span>
-      ${owner ? `<span class="icon-btn del" data-del="${c.id}" title="Apagar canal">${I.trash}</span>` : ''}</button>`;
-  }
-  html += `<div class="sec">Salas de voz ${owner ? `<button class="icon-btn" data-add="voice" title="Criar sala">${I.plus}</button>` : ''}</div>`;
-  for (const c of voiceCh) {
+  const del = c => canCh ? `<span class="icon-btn del" data-del="${c.id}" title="Excluir">${I.trash}</span>` : '';
+  const row = c => {
+    if (c.type === 'text') {
+      const active = c.id === S.cid && S.view === 'chat';
+      return `<button class="ch ${active ? 'active' : ''} ${S.unread.has(c.id) ? 'unread' : ''}" data-cid="${c.id}">${I.hash}<span class="label">${esc(c.name)}</span>${del(c)}</button>`;
+    }
     const people = g.voice?.[c.id] || [];
     const active = call.channelId === c.id && S.view === 'voice';
-    html += `<button class="ch ${active ? 'active' : ''}" data-vid="${c.id}">${I.speaker}<span class="label">${esc(c.name)}</span>
-      ${owner ? `<span class="icon-btn del" data-del="${c.id}" title="Apagar sala">${I.trash}</span>` : ''}</button>`;
-    if (people.length) {
-      html += `<div class="vusers">` + people.map(p => `<div class="vuser">${avatar(p, 'sm')}<span class="nm">${esc(p.username)}</span>
-        ${p.screen ? '<span class="live">AO VIVO</span>' : ''}${p.cam ? I.cam : ''}${p.mic ? '' : I.micOff}</div>`).join('') + `</div>`;
-    }
+    return `<button class="ch ${active ? 'active' : ''}" data-vid="${c.id}">${I.speaker}<span class="label">${esc(c.name)}</span>${del(c)}</button>`
+      + (people.length ? `<div class="vusers">` + people.map(p => `<div class="vuser">${avatar(p, 'sm')}<span class="nm">${esc(p.username)}</span>
+        ${p.screen ? '<span class="live">AO VIVO</span>' : ''}${p.cam ? I.cam : ''}${p.mic ? '' : I.micOff}</div>`).join('') + `</div>` : '');
+  };
+  const add = (type, cat = '') => canCh ? `<button class="icon-btn" data-add="${type}" data-cat="${cat}" title="Criar canal">${I.plus}</button>` : '';
+  const cats = g.categories || [];
+  const ids = new Set(cats.map(c => c.id));
+  const loose = g.channels.filter(c => !c.cat || !ids.has(c.cat));
+  const lt = loose.filter(c => c.type === 'text'), lv = loose.filter(c => c.type === 'voice');
+  let html = '';
+  if (lt.length || !cats.length) html += `<div class="sec">Canais de texto ${add('text')}</div>` + lt.map(row).join('');
+  if (lv.length || !cats.length) html += `<div class="sec">Salas de voz ${add('voice')}</div>` + lv.map(row).join('');
+  for (const cat of cats) {
+    const cs = g.channels.filter(c => c.cat === cat.id);
+    html += `<div class="sec cat">${esc(cat.name)} <span>${add('text', cat.id)}${canCh ? `<button class="icon-btn" data-delcat="${cat.id}" title="Excluir categoria">${I.trash}</button>` : ''}</span></div>`
+      + cs.filter(c => c.type === 'text').map(row).join('') + cs.filter(c => c.type === 'voice').map(row).join('');
   }
   list.innerHTML = html;
   list.querySelectorAll('[data-cid]').forEach(b => b.onclick = () => openTextChannel(b.dataset.cid));
   list.querySelectorAll('[data-vid]').forEach(b => b.onclick = () => joinCall(b.dataset.vid));
-  list.querySelectorAll('[data-add]').forEach(b => b.onclick = e => { e.stopPropagation(); channelModal(g, b.dataset.add); });
+  list.querySelectorAll('[data-add]').forEach(b => b.onclick = e => { e.stopPropagation(); channelModal(g, b.dataset.add, b.dataset.cat); });
   list.querySelectorAll('[data-del]').forEach(b => b.onclick = e => { e.stopPropagation(); deleteChannelModal(b.dataset.del); });
+  list.querySelectorAll('[data-delcat]').forEach(b => b.onclick = () => {
+    const cat = cats.find(c => c.id === b.dataset.delcat);
+    confirmModal(`Excluir a categoria "${cat.name}"?`, 'Os canais dela continuam existindo, só ficam sem categoria.', 'Excluir', async () => {
+      const r = await emit('category:delete', { groupId: g.id, id: cat.id });
+      if (r.error) toast(r.error);
+    });
+  });
+}
+
+function renderDMs(head, list) {
+  head.style.background = '';
+  head.innerHTML = `<span class="name">Mensagens diretas</span><button class="icon-btn" id="dm-new" title="Nova conversa">${I.plus}</button>`;
+  head.querySelector('#dm-new').onclick = findUserModal;
+  const dms = [...S.dms].sort((a, b) => (b.last?.ts || 0) - (a.last?.ts || 0));
+  if (!dms.length) {
+    list.innerHTML = `<p class="muted" style="padding:10px">Nenhuma conversa ainda. Clique no + acima, ou no perfil de alguém e em "Enviar mensagem".</p>`;
+    return;
+  }
+  list.innerHTML = `<div class="sec">Conversas</div>` + dms.map(d => {
+    const cid = dmChannelId(d.user.id);
+    const prev = d.last ? (d.last.mine ? 'Você: ' : '') + (d.last.text || '📎 arquivo') : '';
+    return `<button class="dm-row ${S.dmPeer === d.user.id ? 'active' : ''} ${S.unread.has(cid) ? 'unread' : ''}" data-dm="${esc(d.user.id)}">
+      ${avatar(d.user, 'sm')}<span class="col"><span class="n">${esc(d.user.name)}</span>${prev ? `<span class="p">${esc(prev)}</span>` : ''}</span>
+      <span class="icon-btn x" data-close-dm="${esc(d.user.id)}" title="Fechar conversa">${I.x}</span></button>`;
+  }).join('');
+  list.querySelectorAll('[data-dm]').forEach(b => b.onclick = () => openDM(b.dataset.dm));
+  list.querySelectorAll('[data-close-dm]').forEach(b => b.onclick = async e => {
+    e.stopPropagation();
+    const id = b.dataset.closeDm;
+    await emit('dm:close', { userId: id });
+    S.dms = S.dms.filter(x => x.user.id !== id);
+    if (S.dmPeer === id) { S.dmPeer = null; S.cid = null; openDefaultChannel(); }
+    renderAll();
+  });
+}
+
+function findUserModal() {
+  modal(`<h3>Nova conversa</h3>
+    <label>Procurar pessoa<input id="fu-q" placeholder="Nome de usuário" autocomplete="off"></label>
+    <div class="find-list" id="fu-list"><p class="muted" style="margin:0">Digite ao menos 2 letras.</p></div>
+    <div class="acts"><button class="btn" data-close>Fechar</button></div>`, card => {
+    let t = null;
+    card.querySelector('#fu-q').oninput = e => {
+      clearTimeout(t);
+      const q = e.target.value;
+      t = setTimeout(async () => {
+        const r = await emit('user:find', { query: q });
+        const list = card.querySelector('#fu-list');
+        if (!list) return;
+        if (r.error) return list.innerHTML = `<p class="muted" style="margin:0">${esc(r.error)}</p>`;
+        if (!r.users?.length) return list.innerHTML = `<p class="muted" style="margin:0">Ninguém encontrado.</p>`;
+        r.users.forEach(cacheUser);
+        list.innerHTML = r.users.map(u => `<button class="find-row" data-u="${esc(u.id)}">${avatar(u, 'sm')}<span class="col"><b>${esc(u.name)}</b><span>@${esc(u.username)}</span></span></button>`).join('');
+        list.querySelectorAll('[data-u]').forEach(b => b.onclick = () => { closeModal(); openDM(b.dataset.u); });
+      }, 250);
+    };
+  });
 }
 
 function renderHeader() {
   const t = $('#main-title'), a = $('#head-actions');
   a.innerHTML = '';
+  if (S.gid === '@me') {
+    const u = S.dmPeer && userById(S.dmPeer);
+    t.innerHTML = u ? `<span class="dm-head">${avatar(u, 'sm')}<span>${esc(u.name)}</span></span>` : '<span>Mensagens diretas</span>';
+    $('#msg-input').disabled = !S.cid;
+    $('#msg-input').placeholder = u ? `Conversar com ${u.name}` : 'Mensagem';
+    if (u) {
+      const b = document.createElement('button');
+      b.className = 'icon-btn'; b.title = 'Ver perfil'; b.innerHTML = I.users;
+      b.onclick = () => openProfile(u.id);
+      a.appendChild(b);
+    }
+    return;
+  }
   if (S.view === 'chat' && S.cid) {
     const f = findChannel(S.cid);
     t.innerHTML = `${I.hash}<span>${esc(f?.c.name || '')}</span>`;
-    $('#msg-input').placeholder = `Conversar em #${f?.c.name || ''}`;
+    const canSend = can(f?.g, 'sendMessages');
+    $('#msg-input').disabled = !canSend;
+    $('#msg-input').placeholder = canSend ? `Conversar em #${f?.c.name || ''}` : 'Você não tem permissão para enviar mensagens neste grupo.';
     if (call.channelId) {
       const b = document.createElement('button');
       b.className = 'btn primary'; b.style.padding = '6px 12px';
@@ -432,7 +628,7 @@ function setMembers(show, silent) {
 }
 function renderMembers() {
   const el = $('#members'), g = curGroup();
-  if (!g || !S.user) { el.innerHTML = ''; return; }
+  if (!g || !S.user || S.gid === '@me') { el.innerHTML = ''; return; }
   const inVoice = new Map();
   for (const c of g.channels) if (c.type === 'voice')
     for (const p of g.voice?.[c.id] || []) inVoice.set(p.userId, { name: c.name, screen: p.screen });
@@ -442,8 +638,8 @@ function renderMembers() {
   const row = (m, isOn) => {
     const v = inVoice.get(m.id);
     const st = v ? `<div class="st voice">${v.screen ? '📺 Transmitindo' : '🔊 Em voz'} · ${esc(v.name)}</div>` : (m.status ? `<div class="st">${esc(m.status)}</div>` : '');
-    return `<div class="mem ${isOn ? 'on' : 'off'}" data-uid="${esc(m.id)}"><div class="avw">${avatar(m, 'sm')}<i></i></div>
-      <div class="info"><div class="n" style="color:${isOn ? esc(m.color) : 'inherit'}">${esc(m.username)}${m.id === g.ownerId ? ' 👑' : ''}</div>${st}</div></div>`;
+    return `<div class="mem ${isOn ? 'on' : 'off'}" data-uid="${esc(m.id)}"><div class="avw">${avatar(m, 'sm')}</div>
+      <div class="info"><div class="n" style="color:${isOn ? esc(nameColor(m.id, m.color, g)) : 'inherit'}">${esc(m.name)}${m.id === g.ownerId ? ' 👑' : ''}</div>${st}</div></div>`;
   };
   el.innerHTML = `<div class="sec">Online — ${on.length}</div>${on.map(m => row(m, true)).join('')}`
     + (off.length ? `<div class="sec">Offline — ${off.length}</div>${off.map(m => row(m, false)).join('')}` : '');
@@ -451,10 +647,10 @@ function renderMembers() {
 
 function renderUserbar() {
   if (!S.user) return;
-  $('#userbar').innerHTML = `<button class="me-btn" id="ub-me" title="Ver meu perfil">${avatar(S.user, 'sm')}<span class="col"><span class="nm">${esc(S.user.username)}</span><span class="sub">${esc(S.user.status || 'Online')}</span></span></button>
+  $('#userbar').innerHTML = `<button class="me-btn" id="ub-me" title="Meu perfil e status">${avatar(S.user, 'sm')}<span class="col"><span class="nm">${esc(S.user.name)}</span><span class="sub">${esc(S.user.status || '@' + S.user.username)}</span></span></button>
     ${S.installEvt ? `<button class="icon-btn install-btn" id="ub-install" title="Instalar o app neste aparelho">${I.download}</button>` : ''}<button class="icon-btn" id="ub-logout" title="Sair da conta">${I.logout}</button>`;
   $('#ub-install')?.addEventListener('click', installApp);
-  $('#ub-me').onclick = () => openProfile(S.user.id);
+  $('#ub-me').onclick = e => openMeMenu(e.currentTarget);
   $('#ub-logout').onclick = () => confirmModal('Sair da conta?', 'Você poderá entrar de novo quando quiser.', 'Sair', logout);
 }
 
@@ -479,15 +675,34 @@ const QUICK = ['✅', '❤️', '😂', '👍'];
 const EMOJIS = ['👍', '👎', '❤️', '😂', '😮', '😢', '😡', '🔥', '🎉', '👏', '🙏', '💀', '👀', '✅', '❌', '💯',
   '😎', '🤔', '😭', '🥰', '😴', '🤡', '🤝', '💪', '🎮', '🏆', '⭐', '🍕', '☕', '🍺', '💤', '🚀'];
 
+function fmtSize(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(0) + ' KB';
+  return (n / 1048576).toFixed(1) + ' MB';
+}
+function attHtml(a) {
+  if (!a) return '';
+  const url = `/api/file/${esc(a.id)}`;
+  if (a.mime?.startsWith('image/')) {
+    const r = a.w && a.h ? ` style="aspect-ratio:${a.w}/${a.h}"` : '';
+    return `<img class="att-img" src="${url}" alt="${esc(a.name)}" data-img="${url}" data-name="${esc(a.name)}" loading="lazy"${r}>`;
+  }
+  if (a.mime?.startsWith('video/')) return `<video class="att-img" src="${url}" controls preload="metadata"></video>`;
+  if (a.mime?.startsWith('audio/')) return `<audio src="${url}" controls style="margin-top:6px;max-width:100%"></audio>`;
+  return `<a class="att-file" href="${url}" download="${esc(a.name)}" target="_blank" rel="noopener">${I.file}<span class="col"><b>${esc(a.name)}</b><span>${fmtSize(a.size || 0)}</span></span></a>`;
+}
+
 function msgHtml(m, grouped) {
-  const reply = m.reply ? `<div class="reply-ref" data-goto="${esc(m.reply.id)}">${I.reply}<b style="color:${esc(m.reply.color)}">${esc(m.reply.username)}</b><span>${esc(m.reply.text)}</span></div>` : '';
+  if (m.sys) return `<div class="sysmsg"><b>→</b><span>${esc(m.text)}</span><time>${fmtDate(m.ts)}</time></div>`;
+  const reply = m.reply ? `<div class="reply-ref" data-goto="${esc(m.reply.id)}">${I.reply}<b style="color:${esc(nameColor(m.reply.id && userById(m.reply.id) ? m.reply.id : '', m.reply.color))}">${esc(m.reply.username)}</b><span>${esc(m.reply.text)}</span></div>` : '';
   const rs = m.reactions ? Object.entries(m.reactions).filter(([, ids]) => ids.length) : [];
   const reacts = rs.length ? `<div class="reacts">${rs.map(([e, ids]) =>
-    `<button class="react ${ids.includes(S.user?.id) ? 'mine' : ''}" data-react="${esc(e)}">${esc(e)} <b>${ids.length}</b></button>`).join('')}</div>` : '';
-  const text = `<div class="msg-text">${linkify(m.text)}${m.edited ? ' <span class="edited">(editado)</span>' : ''}</div>${reacts}`;
+    `<button class="react ${ids.includes(S.user?.id) ? 'mine' : ''}" data-react="${esc(e)}">${emojiHtml(e)} <b>${ids.length}</b></button>`).join('')}</div>` : '';
+  const body = (m.text ? `<div class="msg-text">${richText(m.text)}${m.edited ? ' <span class="edited">(editado)</span>' : ''}</div>` : '') + attHtml(m.att);
+  const text = body + reacts;
   const tools = `<div class="msg-tools"><button data-t="react" title="Reagir">${I.smile}</button><button data-t="reply" title="Responder">${I.reply}</button><button data-t="more" title="Mais">${I.more}</button></div>`;
   if (!grouped) return `<div class="msg first" data-id="${esc(m.id)}">${avatar(m)}<div class="msg-body">${reply}<div class="msg-head">
-    <span class="msg-author" style="color:${esc(userById(m.userId)?.color || m.color)}">${esc(m.username)}</span><span class="msg-time">${fmtDate(m.ts)}</span></div>${text}</div>${tools}</div>`;
+    <span class="msg-author" style="color:${esc(nameColor(m.userId, m.color))}">${esc(nameOf(m.userId, m.username))}</span><span class="msg-time">${fmtDate(m.ts)}</span></div>${text}</div>${tools}</div>`;
   return `<div class="msg" data-id="${esc(m.id)}"><div class="gutter">${fmtTime(m.ts)}</div><div class="msg-body">${text}</div>${tools}</div>`;
 }
 
@@ -498,13 +713,17 @@ function renderMessages(mode) {
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   const f = findChannel(S.cid);
   const msgs = S.msgs[S.cid];
-  let html = `<div class="welcome"><div class="big-ic">${I.hash}</div><h2>Bem-vindo a #${esc(f?.c.name || '')}!</h2>
-    <p class="muted">Este é o começo do canal #${esc(f?.c.name || '')}.</p></div>`;
+  const peer = S.gid === '@me' && S.dmPeer ? userById(S.dmPeer) : null;
+  let html = peer
+    ? `<div class="welcome">${avatar(peer, 'xl nodot')}<h2>${esc(peer.name)}</h2>
+       <p class="muted">@${esc(peer.username)} — este é o começo da sua conversa privada.</p></div>`
+    : `<div class="welcome"><div class="big-ic">${I.hash}</div><h2>Bem-vindo a #${esc(f?.c.name || '')}!</h2>
+       <p class="muted">Este é o começo do canal #${esc(f?.c.name || '')}.</p></div>`;
   if (!msgs) html += `<p class="muted" style="padding:0 16px">Carregando…</p>`;
   else {
     let prev = null;
     for (const m of msgs) {
-      const grouped = prev && !m.reply && prev.userId === m.userId && m.ts - prev.ts < 5 * 60e3;
+      const grouped = prev && !m.reply && !m.att && !m.sys && !prev.sys && prev.userId === m.userId && m.ts - prev.ts < 5 * 60e3;
       html += msgHtml(m, grouped);
       prev = m;
     }
@@ -528,7 +747,7 @@ const react = (m, emoji) => emit('message:react', { channelId: S.cid, id: m.id, 
 
 function openMsgMenu(m, x, y) {
   const mine = m.userId === S.user?.id;
-  const canDel = mine || curGroup()?.ownerId === S.user?.id;
+  const canDel = mine || can(curGroup(), 'manageMessages');
   ctx.innerHTML = `<div class="quick">${QUICK.map(e => `<button data-e="${e}">${e}</button>`).join('')}</div>
     <button class="item" data-a="react">${I.smile}Adicionar reação</button>
     <div class="sep"></div>
@@ -541,7 +760,7 @@ function openMsgMenu(m, x, y) {
     if (q) { closeCtx(); react(m, q.dataset.e); return; }
     if (!it) return;
     const act = it.dataset.a;
-    if (act === 'react') return openEmojiPicker(m, x, y);
+    if (act === 'react') return openEmojiPicker(x, y, e => react(m, e));
     closeCtx();
     if (act === 'edit') startEdit(m);
     if (act === 'reply') startReply(m);
@@ -553,9 +772,12 @@ function openMsgMenu(m, x, y) {
   };
   placeCtx(x, y);
 }
-function openEmojiPicker(m, x, y) {
-  ctx.innerHTML = `<div class="grid">${EMOJIS.map(e => `<button data-e="${e}">${e}</button>`).join('')}</div>`;
-  ctx.onclick = e => { const q = e.target.closest('[data-e]'); if (q) { closeCtx(); react(m, q.dataset.e); } };
+function openEmojiPicker(x, y, onPick) {
+  const g = curGroup(), custom = g?.emojis || [];
+  ctx.innerHTML = (custom.length ? `<div class="pf-h" style="padding:4px 6px">Emojis do grupo</div>
+    <div class="grid">${custom.map(c => `<button data-e=":${esc(c.name)}:">${cemojiImg(g, c)}</button>`).join('')}</div><div class="sep"></div>` : '')
+    + `<div class="grid">${EMOJIS.map(e => `<button data-e="${e}">${e}</button>`).join('')}</div>`;
+  ctx.onclick = e => { const q = e.target.closest('[data-e]'); if (q) { closeCtx(); onPick(q.dataset.e); } };
   placeCtx(x, y);
 }
 document.addEventListener('pointerdown', e => { if (!ctx.classList.contains('hidden') && !e.target.closest('#ctx')) closeCtx(); });
@@ -566,6 +788,8 @@ document.addEventListener('pointerdown', e => { if (!ctx.classList.contains('hid
   box.addEventListener('click', e => {
     const m = msgOf(e.target); if (!m) return;
     if (e.target.closest('.msg > .av, .msg-author')) return openProfile(m.userId, m);
+    const im = e.target.closest('[data-img]');
+    if (im) return openLightbox(im.dataset.img, im.dataset.name);
     const rb = e.target.closest('[data-react]'), tb = e.target.closest('[data-t]'), go = e.target.closest('[data-goto]');
     if (rb) return react(m, rb.dataset.react);
     if (go) {
@@ -577,7 +801,7 @@ document.addEventListener('pointerdown', e => { if (!ctx.classList.contains('hid
     }
     if (tb) {
       const r = tb.getBoundingClientRect();
-      if (tb.dataset.t === 'react') openEmojiPicker(m, r.right - 300, r.bottom + 4);
+      if (tb.dataset.t === 'react') openEmojiPicker(r.right - 300, r.bottom + 4, e => react(m, e));
       if (tb.dataset.t === 'reply') startReply(m);
       if (tb.dataset.t === 'more') openMsgMenu(m, r.right - 220, r.bottom + 4);
     }
@@ -603,6 +827,13 @@ document.addEventListener('pointerdown', e => { if (!ctx.classList.contains('hid
   box.addEventListener('touchcancel', cancel);
 })();
 
+function openLightbox(url, name) {
+  const lb = $('#lightbox');
+  lb.innerHTML = `<img src="${esc(url)}" alt=""><a href="${esc(url)}" download="${esc(name || 'imagem')}" target="_blank" rel="noopener">Baixar</a>`;
+  lb.classList.remove('hidden');
+  lb.onclick = e => { if (!e.target.closest('a')) lb.classList.add('hidden'); };
+}
+
 function renderComposeBar() {
   const bar = $('#compose-bar');
   if (!S.editing && !S.replyTo) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
@@ -612,6 +843,7 @@ function renderComposeBar() {
   bar.querySelector('button').onclick = clearCompose;
 }
 function clearCompose() {
+  clearAtts();
   const inp = $('#msg-input');
   if (S.editing) { inp.value = ''; inp.style.height = 'auto'; }
   S.editing = null; S.replyTo = null;
@@ -636,18 +868,128 @@ input.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !isMobile()) { e.preventDefault(); sendMessage(); }
 });
 $('#composer').addEventListener('submit', e => { e.preventDefault(); sendMessage(); });
+$('#emo-btn').innerHTML = I.smile;
+$('#emo-btn').onclick = e => {
+  if (input.disabled) return;
+  const r = e.currentTarget.getBoundingClientRect();
+  openEmojiPicker(r.right - 330, r.top - 420, em => {
+    input.value += (input.value && !/\s$/.test(input.value) ? ' ' : '') + em + (em.startsWith(':') ? ' ' : '');
+    autosize(); input.focus();
+  });
+};
+// Imagens grandes são reduzidas antes de enviar, para não pesar
+function shrinkImage(file) {
+  return new Promise(res => {
+    if (!file.type.startsWith('image/') || file.type === 'image/gif' || file.size < 400 * 1024) return res(null);
+    const img = new Image(), url = URL.createObjectURL(file);
+    img.onload = () => {
+      const k = Math.min(1, 1920 / Math.max(img.width, img.height));
+      if (k === 1 && file.size < 1.5 * 1024 * 1024) { URL.revokeObjectURL(url); return res(null); }
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      c.toBlob(b => res(b && b.size < file.size ? b : null), 'image/jpeg', 0.85);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); res(null); };
+    img.src = url;
+  });
+}
+function imageSize(blob) {
+  return new Promise(res => {
+    if (!blob.type.startsWith('image/')) return res({});
+    const img = new Image(), url = URL.createObjectURL(blob);
+    img.onload = () => { URL.revokeObjectURL(url); res({ w: img.naturalWidth, h: img.naturalHeight }); };
+    img.onerror = () => { URL.revokeObjectURL(url); res({}); };
+    img.src = url;
+  });
+}
+async function addAttachments(files) {
+  for (const f of [...files].slice(0, 5)) {
+    if (S.atts.length >= 5) return toast('No máximo 5 arquivos por mensagem.');
+    if (f.size > 8 * 1024 * 1024) { toast(`"${f.name}" passa de 8 MB.`); continue; }
+    const it = { name: f.name || 'arquivo', mime: f.type || 'application/octet-stream', size: f.size, file: f, up: true };
+    if (f.type.startsWith('image/')) it.preview = URL.createObjectURL(f);
+    S.atts.push(it);
+    renderAtts();
+    try {
+      const small = await shrinkImage(f);
+      const blob = small || f;
+      const { w, h } = await imageSize(blob);
+      const r = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'x-token': S.token, 'x-name': encodeURIComponent(it.name), 'x-mime': small ? 'image/jpeg' : it.mime },
+        body: blob,
+      });
+      const j = await r.json().catch(() => ({ error: 'Falha no envio.' }));
+      if (!r.ok || !j.att) throw new Error(j.error || 'Falha no envio.');
+      Object.assign(it, { att: { ...j.att, w, h }, up: false, size: j.att.size });
+    } catch (e) {
+      toast(e.message || 'Não consegui enviar o arquivo.');
+      S.atts = S.atts.filter(x => x !== it);
+    }
+    renderAtts();
+  }
+}
+function renderAtts() {
+  const bar = $('#att-bar');
+  bar.classList.toggle('hidden', !S.atts.length);
+  bar.innerHTML = S.atts.map((a, i) => `<div class="att-chip ${a.up ? 'up' : ''}">
+    ${a.preview ? `<img src="${a.preview}" alt="">` : `<span class="i">${I.file}</span>`}
+    <span class="col"><b>${esc(a.name)}</b><span>${a.up ? 'enviando…' : fmtSize(a.size)}</span></span>
+    <button type="button" data-i="${i}" title="Remover">✕</button></div>`).join('');
+  bar.querySelectorAll('[data-i]').forEach(b => b.onclick = () => {
+    const a = S.atts[+b.dataset.i];
+    if (a?.preview) URL.revokeObjectURL(a.preview);
+    S.atts.splice(+b.dataset.i, 1);
+    renderAtts();
+  });
+}
+function clearAtts() { S.atts.forEach(a => a.preview && URL.revokeObjectURL(a.preview)); S.atts = []; renderAtts(); }
+
+$('#att-btn').innerHTML = I.paperclip;
+$('#att-btn').onclick = () => { if (!input.disabled) $('#att-file').click(); };
+$('#att-file').onchange = e => { addAttachments(e.target.files); e.target.value = ''; };
+input.addEventListener('paste', e => {
+  const files = [...(e.clipboardData?.files || [])];
+  if (files.length) { e.preventDefault(); addAttachments(files); }
+});
+(function wireDrop() {
+  const main = document.querySelector('.main');
+  let depth = 0;
+  main.addEventListener('dragenter', e => { if (e.dataTransfer?.types.includes('Files')) { e.preventDefault(); depth++; $('#app').classList.add('drop'); } });
+  main.addEventListener('dragover', e => { if (e.dataTransfer?.types.includes('Files')) e.preventDefault(); });
+  main.addEventListener('dragleave', () => { if (--depth <= 0) { depth = 0; $('#app').classList.remove('drop'); } });
+  main.addEventListener('drop', e => {
+    if (!e.dataTransfer?.files.length) return;
+    e.preventDefault(); depth = 0;
+    $('#app').classList.remove('drop');
+    if (!input.disabled && S.cid) addAttachments(e.dataTransfer.files);
+  });
+})();
+
 async function sendMessage() {
   const text = input.value.trim();
-  if (!text || !S.cid) return;
-  const editing = S.editing, replyTo = S.replyTo;
+  if (!S.cid) return;
+  if (S.atts.some(a => a.up)) return toast('Espere o arquivo terminar de enviar.');
+  if (!text && !S.atts.length) return;
+  const editing = S.editing, replyTo = S.replyTo, atts = S.atts.filter(a => a.att);
   S.editing = null; S.replyTo = null;
   input.value = ''; autosize(); renderComposeBar();
-  const r = editing
-    ? await emit('message:edit', { channelId: S.cid, id: editing, text })
-    : await emit('message:send', { channelId: S.cid, text, replyTo: replyTo?.id });
+  S.atts = []; renderAtts();
+  let r;
+  if (editing) r = await emit('message:edit', { channelId: S.cid, id: editing, text });
+  else if (atts.length) {
+    // uma mensagem por arquivo; o texto vai junto com o primeiro
+    for (let i = 0; i < atts.length; i++) {
+      r = await emit('message:send', { channelId: S.cid, text: i ? '' : text, replyTo: i ? null : replyTo?.id, att: atts[i].att });
+      if (r.error) break;
+    }
+    atts.forEach(a => a.preview && URL.revokeObjectURL(a.preview));
+  } else r = await emit('message:send', { channelId: S.cid, text, replyTo: replyTo?.id });
   if (r.error) {
     toast(r.error);
-    if (!input.value) { input.value = text; autosize(); S.editing = editing; S.replyTo = replyTo; renderComposeBar(); }
+    if (!input.value && !atts.length) { input.value = text; autosize(); S.editing = editing; S.replyTo = replyTo; renderComposeBar(); }
   }
   askNotifyPermission();
 }
@@ -668,8 +1010,10 @@ function modal(html, onReady) {
 function closeModal() { $('#modal').classList.add('hidden'); $('#modal-card').innerHTML = ''; }
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return;
+  if (!$('#lightbox').classList.contains('hidden')) return $('#lightbox').classList.add('hidden');
   if (!ctx.classList.contains('hidden')) return closeCtx();
   if (!$('#modal').classList.contains('hidden')) return closeModal();
+  if (!$('#settings').classList.contains('hidden')) return closeSettings();
   if (S.editing || S.replyTo) clearCompose();
 });
 
@@ -740,7 +1084,7 @@ function inviteModal(g) {
   });
 }
 
-function channelModal(g, type) {
+function channelModal(g, type, cat = '') {
   modal(`<h3>Criar ${type === 'voice' ? 'sala de voz' : 'canal de texto'}</h3>
     <form id="m-ch" style="display:flex;flex-direction:column;gap:12px">
       <div class="choice">
@@ -748,12 +1092,13 @@ function channelModal(g, type) {
         <label><input type="radio" name="t" value="voice" ${type === 'voice' ? 'checked' : ''}> ${I.speaker} Voz/vídeo</label>
       </div>
       <label>Nome<input id="m-cname" maxlength="32" placeholder="${type === 'voice' ? 'Ex.: Jogando' : 'Ex.: memes'}" required></label>
+      ${g.categories?.length ? `<label>Categoria<select id="m-cat"><option value="">Sem categoria</option>${g.categories.map(c => `<option value="${c.id}" ${c.id === cat ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : ''}
       <div class="acts"><button type="button" class="btn" data-close>Cancelar</button><button class="btn primary">Criar</button></div>
     </form>`, card => {
     card.querySelector('#m-ch').onsubmit = async e => {
       e.preventDefault();
       const t = card.querySelector('input[name=t]:checked').value;
-      const r = await emit('channel:create', { groupId: g.id, name: card.querySelector('#m-cname').value, type: t });
+      const r = await emit('channel:create', { groupId: g.id, name: card.querySelector('#m-cname').value, type: t, cat: card.querySelector('#m-cat')?.value || '' });
       if (r.error) return toast(r.error);
       closeModal();
       if (t === 'text') setTimeout(() => openTextChannel(r.channel.id), 50);
@@ -814,7 +1159,7 @@ const call = {
 };
 const hasMedia = () => !!navigator.mediaDevices?.getUserMedia;
 const NATIVE = window.NexoNative || null;   // existe quando roda dentro do app Android (APK)
-const APK_LATEST = 1;                         // aumente quando publicar um APK novo
+const APK_LATEST = 2;                         // aumente quando publicar um APK novo
 const IS_ANDROID = /Android/i.test(navigator.userAgent);
 const canShareScreen = () => !!NATIVE || !!navigator.mediaDevices?.getDisplayMedia;
 const localTracks = () => [call.micTrack, call.camTrack, call.screenTrack, call.screenAudioTrack];
@@ -1079,6 +1424,7 @@ async function getCamera() {
 }
 
 async function toggleCam() {
+  if (!call.camTrack && !can(group(call.groupId), 'video')) return toast('Você não tem permissão para usar vídeo neste grupo.');
   if (call.camTrack) {
     call.camTrack.stop();
     call.camTrack = null;
@@ -1112,6 +1458,7 @@ async function flipCamera() {
 
 async function toggleScreen() {
   if (call.screenTrack) return stopScreen();
+  if (!can(group(call.groupId), 'video')) return toast('Você não tem permissão para transmitir a tela neste grupo.');
   if (NATIVE) return startNativeScreen();
   if (!canShareScreen()) {
     if (IS_ANDROID) apkModal('Para transmitir a tela do celular, instale o app Nexo para Android. O navegador não permite capturar a tela.');
@@ -1420,6 +1767,42 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('beforeunload', () => { if (call.channelId) S.socket?.emit('voice:leave'); });
 
 // ---------------------------------------------------------------------
+// Menu do próprio usuário (clique no seu nome, embaixo à esquerda)
+// ---------------------------------------------------------------------
+const PRESENCE_LABEL = { online: 'Disponível', idle: 'Ausente', dnd: 'Não perturbar', invisible: 'Invisível' };
+function openMeMenu(anchor) {
+  const u = S.user, cur = u.presence || 'online';
+  ctx.innerHTML = `<div class="me-card">${avatar(u, 'sm')}<span class="col"><b>${esc(u.name)}</b><span>@${esc(u.username)}</span></span></div>
+    <button class="item" data-a="profile">${I.users}Ver meu perfil</button>
+    <button class="item" data-a="edit">${I.edit}Editar perfil</button>
+    <div class="sep"></div>
+    ${Object.entries(PRESENCE_LABEL).map(([k, v]) => `<button class="item" data-p="${k}"><i class="pres ${k === 'invisible' ? 'offline' : k}"></i>${v}${k === cur ? '<span class="sub">✓</span>' : ''}</button>`).join('')}
+    <div class="sep"></div>
+    <button class="item" data-a="copy">${I.copy}Copiar ID do usuário</button>
+    <button class="item danger" data-a="logout">${I.logout}Sair da conta</button>`;
+  ctx.onclick = async e => {
+    const pr = e.target.closest('[data-p]'), it = e.target.closest('[data-a]');
+    if (pr) {
+      closeCtx();
+      const r = await emit('profile:update', { presence: pr.dataset.p });
+      if (r.error) return toast(r.error);
+      S.user = r.user; renderAll();
+      toast('Status: ' + PRESENCE_LABEL[pr.dataset.p]);
+      return;
+    }
+    if (!it) return;
+    closeCtx();
+    const a = it.dataset.a;
+    if (a === 'profile') openProfile(S.user.id);
+    if (a === 'edit') editProfile();
+    if (a === 'copy') navigator.clipboard?.writeText(S.user.id).then(() => toast('ID copiado!')).catch(() => toast(S.user.id));
+    if (a === 'logout') confirmModal('Sair da conta?', 'Você poderá entrar de novo quando quiser.', 'Sair', logout);
+  };
+  const r = anchor.getBoundingClientRect();
+  placeCtx(r.left, r.top - 330);
+}
+
+// ---------------------------------------------------------------------
 // Perfil: ver o de qualquer pessoa e editar o seu
 // ---------------------------------------------------------------------
 $('#members').addEventListener('click', e => { const r = e.target.closest('[data-uid]'); if (r) openProfile(r.dataset.uid); });
@@ -1436,17 +1819,22 @@ function openProfile(uid, fallback) {
     for (const p of gr.voice?.[c.id] || []) if (p.userId === uid) v = { name: c.name, group: gr.name, screen: p.screen };
   const since = u.created ? new Date(u.created).toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
   modal(`<div class="pf-banner" style="background:${esc(u.banner || u.color || '#555')}"></div>
-    <div class="pf-av">${avatar(u, 'xl')}<i class="${on ? 'on' : ''}"></i></div>
-    <h3 class="pf-name">${esc(u.username)}${g && g.ownerId === uid ? ' 👑' : ''}</h3>
+    <div class="pf-av">${avatar(u, 'xl')}</div>
+    <h3 class="pf-name" style="color:${esc(nameColor(uid, '#e8e9ee'))}">${esc(u.name || u.username)}${g && g.ownerId === uid ? ' 👑' : ''}</h3>
+    <div class="pf-tag">@${esc(u.username)}</div>
     ${u.status ? `<div class="pf-status">${esc(u.status)}</div>` : ''}
-    ${u.gone ? '<div class="pf-status">Esta pessoa não está mais no grupo.</div>' : ''}
+    ${u.gone ? '<div class="pf-status">Esta pessoa não está mais no grupo.</div>' : profileExtras(uid)}
     ${v ? `<div class="pf-box"><div class="pf-h">${v.screen ? 'Transmitindo a tela' : 'Em chamada de voz'}</div><div class="pf-voice">${v.screen ? '📺' : '🔊'} ${esc(v.name)} · ${esc(v.group)}</div></div>` : ''}
     ${u.gone ? '' : `<div class="pf-box">
       <div class="pf-h">Sobre mim</div><div class="pf-bio">${u.bio ? linkify(u.bio) : '<span class="muted">Nada por aqui ainda.</span>'}</div>
       ${since ? `<div class="pf-h">Membro desde</div><div>${since}</div>` : ''}
-      <div class="pf-h">Situação</div><div>${on ? '🟢 Online' : '⚫ Offline'}</div></div>`}
-    <div class="acts">${me ? '<button class="btn primary" id="pf-edit">Editar perfil</button>' : ''}<button class="btn" data-close>Fechar</button></div>`,
-    card => { const b = card.querySelector('#pf-edit'); if (b) b.onclick = editProfile; });
+      <div class="pf-h">Situação</div><div>${PRESENCE_LABEL[presOf(u)] ? (presOf(u) === 'offline' ? '⚫ Offline' : '🟢 ' + PRESENCE_LABEL[presOf(u)]) : (on ? '🟢 Online' : '⚫ Offline')}</div></div>`}
+    <div class="acts">${me ? '<button class="btn primary" id="pf-edit">Editar perfil</button>' : (u.gone ? '' : '<button class="btn primary" id="pf-dm">Enviar mensagem</button>')}<button class="btn" data-close>Fechar</button></div>`,
+    card => {
+      const b = card.querySelector('#pf-edit'); if (b) b.onclick = editProfile;
+      const d = card.querySelector('#pf-dm'); if (d) d.onclick = () => { closeModal(); openDM(uid); };
+      wireProfileExtras(card);
+    });
 }
 
 function fileToAvatar(file) {
@@ -1473,19 +1861,21 @@ function editProfile() {
       <div class="btns"><button type="button" class="btn primary" id="pe-pick">Trocar foto</button>
       <button type="button" class="btn" id="pe-rm">Remover foto</button></div>
       <input type="file" id="pe-file" accept="image/*" hidden></div>
+    <label>Nome exibido<input id="pe-display" maxlength="32" placeholder="${esc(u.username)}" value="${esc(u.name === u.username ? '' : u.name)}"></label>
+    <p class="muted" style="margin:-8px 0 0;font-size:13px">É o nome que os outros veem. Deixe vazio para usar @${esc(u.username)}.</p>
     <label>Cor do nome<div class="swatches" id="pe-colors">${PAL.map(c => `<button type="button" class="swatch" data-c="${c}" style="background:${c}"></button>`).join('')}
       <input type="color" id="pe-color" value="${esc(st.color)}" title="Outra cor"></div></label>
     <label>Cor da capa<div class="swatches"><input type="color" id="pe-banner" value="${esc(st.banner)}"></div></label>
     <label>Status<input id="pe-status" maxlength="60" placeholder="Ex.: Jogando PUBG" value="${esc(u.status || '')}"></label>
     <label>Sobre mim<textarea id="pe-bio" rows="3" maxlength="190" placeholder="Conte algo sobre você">${esc(u.bio || '')}</textarea><span class="cnt" id="pe-cnt"></span></label>
-    <p class="muted" style="margin:0;font-size:13px">O nome de usuário (${esc(u.username)}) é o seu login e não pode ser alterado.</p>
+    <p class="muted" style="margin:0;font-size:13px">O nome de usuário @${esc(u.username)} é o seu login e não pode ser alterado.</p>
     <div class="acts"><button class="btn" data-close>Cancelar</button><button class="btn primary" id="pe-save">Salvar</button></div>`, card => {
     const q = sel => card.querySelector(sel);
     const preview = () => {
       const el = q('#pe-av .av');
       el.style.background = st.color;
       if (st.avatar) el.innerHTML = `<img src="${st.avatar}" alt="">`;
-      else if (st.avatar === null) el.textContent = (u.username[0] || '?');
+      else if (st.avatar === null) el.innerHTML = initial(q('#pe-display').value || u.username);
       card.querySelectorAll('.swatch').forEach(b => b.classList.toggle('sel', b.dataset.c.toLowerCase() === st.color.toLowerCase()));
     };
     const cnt = () => { q('#pe-cnt').textContent = `${q('#pe-bio').value.length}/190`; };
@@ -1501,7 +1891,7 @@ function editProfile() {
     q('#pe-bio').oninput = cnt;
     q('#pe-save').onclick = async () => {
       q('#pe-save').disabled = true;
-      const r = await emit('profile:update', { color: st.color, banner: st.banner, avatar: st.avatar, status: q('#pe-status').value, bio: q('#pe-bio').value });
+      const r = await emit('profile:update', { display: q('#pe-display').value, color: st.color, banner: st.banner, avatar: st.avatar, status: q('#pe-status').value, bio: q('#pe-bio').value });
       if (r.error) { q('#pe-save').disabled = false; return toast(r.error); }
       S.user = r.user;
       renderAll();
@@ -1540,8 +1930,10 @@ async function installApp() {
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
   // Botao "voltar" do Android: fecha o que estiver aberto antes de minimizar o app
   window.__nexoBack = () => {
+    if (!$('#lightbox').classList.contains('hidden')) { $('#lightbox').classList.add('hidden'); return true; }
     if (!ctx.classList.contains('hidden')) { closeCtx(); return true; }
     if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
+    if (!$('#settings').classList.contains('hidden')) { closeSettings(); return true; }
     const app = $('#app');
     if (app.classList.contains('drawer')) { closeDrawer(); return true; }
     if (isMobile() && app.classList.contains('show-members')) { setMembers(false); return true; }
