@@ -198,6 +198,7 @@ function dropChannelMsgs(cid) {
 // ------------------------------------------------------------------
 // Utilidades
 // ------------------------------------------------------------------
+const slowLast = new Map();   // modo lento: pessoa+canal -> última mensagem
 const newId = () => crypto.randomBytes(8).toString('hex');
 const newInvite = () => crypto.randomBytes(6).toString('hex');
 const hashPass = (pw, salt) => crypto.scryptSync(String(pw), salt, 64).toString('hex');
@@ -224,8 +225,50 @@ const memberView = u => ({ ...publicUser(u), online: isOnline(u.id), presence: v
 // ------------------------------------------------------------------
 const PERMS = ['admin', 'manageGroup', 'manageChannels', 'manageRoles', 'manageEmoji', 'kick', 'ban',
   'manageMessages', 'viewAudit', 'muteMembers', 'deafenMembers', 'moveMembers', 'disconnectMembers',
-  'sendMessages', 'addReactions', 'connect', 'video'];
-const DEFAULT_EVERYONE = { sendMessages: true, addReactions: true, connect: true, video: true };
+  'sendMessages', 'addReactions', 'connect', 'video',
+  'view', 'readHistory', 'attachFiles', 'embedLinks', 'speak', 'stream', 'useVAD'];
+const DEFAULT_EVERYONE = { sendMessages: true, addReactions: true, connect: true, video: true,
+  view: true, readHistory: true, attachFiles: true, embedLinks: true, speak: true, stream: true, useVAD: true };
+// Permissões que podem ser trocadas em cada canal / categoria (permitir, negar ou herdar)
+const CH_PERMS = ['view', 'manageChannels', 'sendMessages', 'readHistory', 'attachFiles', 'embedLinks', 'addReactions',
+  'manageMessages', 'connect', 'speak', 'video', 'stream', 'useVAD', 'muteMembers', 'deafenMembers', 'moveMembers', 'disconnectMembers'];
+// Configurações de cada canal (com os limites aceitos)
+const TEXT_CFG = { maxLen: 2000, slow: 0, edit: true, del: true, replies: true, maxFileMB: 25, newHistory: true, retention: 0 };
+const VOICE_CFG = { limit: 0, locked: false, temp: false, bitrate: 64 };
+function cleanCfg(type, cur, inc) {
+  const base = type === 'voice' ? VOICE_CFG : TEXT_CFG;
+  const out = { ...base, ...(cur || {}) };
+  if (!inc || typeof inc !== 'object') return out;
+  const num = (v, lo, hi, d) => { v = Math.round(Number(v)); return Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : d; };
+  if (type === 'voice') {
+    if ('limit' in inc) out.limit = num(inc.limit, 0, 12, 0);
+    if ('locked' in inc) out.locked = !!inc.locked;
+    if ('temp' in inc) out.temp = !!inc.temp;
+    if ('bitrate' in inc) out.bitrate = [32, 64, 96, 128].includes(Number(inc.bitrate)) ? Number(inc.bitrate) : 64;
+  } else {
+    if ('maxLen' in inc) out.maxLen = num(inc.maxLen, 1, 2000, 2000);
+    if ('slow' in inc) out.slow = [0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600].includes(Number(inc.slow)) ? Number(inc.slow) : 0;
+    for (const k of ['edit', 'del', 'replies', 'newHistory']) if (k in inc) out[k] = !!inc[k];
+    if ('maxFileMB' in inc) out.maxFileMB = num(inc.maxFileMB, 1, 25, 25);
+    if ('retention' in inc) out.retention = [0, 1, 7, 30, 90, 365].includes(Number(inc.retention)) ? Number(inc.retention) : 0;
+  }
+  return out;
+}
+// Sobrescritas: { everyone|r:<cargo>|m:<pessoa>: { a: {perm:1}, d: {perm:1} } }
+function cleanOw(g, ow) {
+  const out = {};
+  if (!ow || typeof ow !== 'object') return out;
+  for (const [key, v] of Object.entries(ow)) {
+    if (!(key === 'everyone' || (key.startsWith('r:') && g.roles.some(r => 'r:' + r.id === key)) || (key.startsWith('m:') && db.users[key.slice(2)]))) continue;
+    const a = {}, d = {};
+    for (const k of CH_PERMS) {
+      if (v?.a?.[k]) a[k] = 1;
+      else if (v?.d?.[k]) d[k] = 1;
+    }
+    if (Object.keys(a).length || Object.keys(d).length) out[key] = { a, d };
+  }
+  return out;
+}
 
 // Garante que grupos antigos tenham os campos novos
 function ensureGroup(g) {
@@ -238,6 +281,15 @@ function ensureGroup(g) {
   g.emojis ||= [];
   g.categories ||= [];
   g.sys ||= { welcome: true, channel: null };
+  // v20: permissões novas (ver canal, histórico, anexos, links, falar, transmitir, detecção de voz)
+  if ((g.permV || 0) < 2) {
+    for (const k of ['view', 'readHistory', 'attachFiles', 'embedLinks', 'speak', 'useVAD']) if (!(k in g.everyone)) g.everyone[k] = true;
+    if (!('stream' in g.everyone)) g.everyone.stream = !!g.everyone.video;
+    for (const r of g.roles) if (r.perms?.video && !('stream' in r.perms)) r.perms.stream = true;
+    g.permV = 2;
+  }
+  for (const c of g.channels) { c.cfg = cleanCfg(c.type, c.cfg); c.ow ||= {}; c.topic ||= ''; }
+  for (const c of g.categories) c.ow ||= {};
   g.desc ||= '';
   g.banner ||= '';
   g.created ||= Date.now();
@@ -254,6 +306,44 @@ function permsOf(g, uid) {
   return out;
 }
 const can = (g, uid, p) => !!permsOf(g, uid)[p];
+// Sobrescritas que valem para o canal: as do canal; o que estiver "herdar" vem da categoria
+function effOw(g, c) {
+  const cat = c.cat && g.categories.find(x => x.id === c.cat);
+  const out = {};
+  const keys = new Set([...Object.keys(cat?.ow || {}), ...Object.keys(c.ow || {})]);
+  for (const key of keys) {
+    const co = c.ow?.[key] || {}, ko = cat?.ow?.[key] || {};
+    const a = {}, d = {};
+    for (const k of CH_PERMS) {
+      if (co.a?.[k]) a[k] = 1; else if (co.d?.[k]) d[k] = 1;
+      else if (ko.a?.[k]) a[k] = 1; else if (ko.d?.[k]) d[k] = 1;
+    }
+    out[key] = { a, d };
+  }
+  return out;
+}
+// Permissões da pessoa DENTRO de um canal (ou categoria).
+// Ordem igual à do Discord: cargos do grupo → @everyone do canal → cargos do canal → a pessoa.
+// Administrador e dono não são afetados.
+function permsIn(g, uid, c) {
+  const out = permsOf(g, uid);
+  if (!c || out.admin) return out;
+  const ow = c.channels ? c.ow /* categoria */ : null;
+  const eff = ow ? Object.fromEntries(Object.entries(ow).map(([k, v]) => [k, { a: v.a || {}, d: v.d || {} }])) : effOw(g, c);
+  const apply = o => { if (!o) return; for (const k in o.d) out[k] = false; for (const k in o.a) out[k] = true; };
+  apply(eff.everyone);
+  const mine = g.memberRoles[uid] || [];
+  const A = {}, D = {};
+  for (const rid of mine) { const o = eff['r:' + rid]; if (!o) continue; Object.assign(D, o.d); Object.assign(A, o.a); }
+  apply({ d: D, a: A });
+  apply(eff['m:' + uid]);
+  if (!out.view) for (const k of CH_PERMS) out[k] = false;
+  if (!out.sendMessages) { out.attachFiles = false; out.embedLinks = false; }
+  if (!out.connect) { out.speak = false; out.video = false; out.stream = false; }
+  return out;
+}
+const canIn = (g, uid, c, p) => !!permsIn(g, uid, c)[p];
+const catAsChannel = cat => ({ ...cat, channels: true });   // usado para calcular a permissão numa categoria
 // Posicao na hierarquia: menor = mais alto. Dono = -1, sem cargo = fim da lista.
 function rank(g, uid) {
   if (g.ownerId === uid) return -1;
@@ -550,9 +640,9 @@ function dropVoice(cid, sid) {
   const r = voice.get(cid);
   if (!r || !r.has(sid)) return;
   r.delete(sid);
-  if (!r.size) voice.delete(cid);
   io.to('v:' + cid).emit('voice:peer-left', { sid });
   io.in(sid).socketsLeave('v:' + cid);
+  if (!r.size) { voice.delete(cid); setTimeout(() => { if (!voice.get(cid)) roomEmptied(cid); }, 0); }
 }
 
 // Quem está numa sala de voz (serve tanto para grupo quanto para conversa privada)
@@ -572,26 +662,42 @@ function notifyVoice(cid) {
   if (f) emitPresence(f.g);
 }
 
-function voicePresence(g) {
+function voicePresence(g, uid) {
   const out = {};
   for (const c of g.channels) {
-    if (c.type !== 'voice') continue;
+    if (c.type !== 'voice' || (uid && !canIn(g, uid, c, 'view'))) continue;
     const r = voice.get(c.id);
     out[c.id] = r ? [...r.entries()].map(([sid, p]) => ({ sid, ...p })) : [];
   }
   return out;
 }
-function groupView(g) {
+// Cada pessoa só recebe os canais que pode ver, com as permissões dela em cada um
+const CH_KEYS = CH_PERMS;
+function channelView(g, c, uid) {
+  const P = permsIn(g, uid, c);
+  const v = { id: c.id, name: c.name, type: c.type, topic: c.topic || '', cfg: c.cfg, p: Object.fromEntries(CH_KEYS.map(k => [k, !!P[k]])) };
+  if (c.cat) v.cat = c.cat;
+  v.priv = !!effOw(g, c).everyone?.d?.view;
+  v.synced = !Object.keys(c.ow || {}).length;
+  if (P.manageChannels) v.ow = c.ow || {};
+  return v;
+}
+function groupView(g, uid) {
+  const chans = g.channels.filter(c => !uid || canIn(g, uid, c, 'view'));
+  const manage = uid && can(g, uid, 'manageChannels');
   return {
-    id: g.id, name: g.name, ownerId: g.ownerId, invite: g.invite, channels: g.channels,
+    id: g.id, name: g.name, ownerId: g.ownerId, invite: g.invite,
+    channels: uid ? chans.map(c => channelView(g, c, uid)) : g.channels,
     desc: g.desc, banner: g.banner, created: g.created,
     iv: (g.icon || g.iconId || g.iconStillId) ? (g.iv || 1) : 0, igif: !!g.iconGif,
     bv: g.bannerStillId ? (g.bv || 1) : 0, bgif: !!g.bannerGif,
     roles: g.roles, everyone: g.everyone, memberRoles: g.memberRoles, joined: g.joined,
-    categories: g.categories, sys: g.sys,
+    categories: g.categories.filter(k => manage || chans.some(c => c.cat === k.id))
+      .map(k => ({ id: k.id, name: k.name, ...(manage ? { ow: k.ow || {} } : {}) })),
+    sys: g.sys,
     emojis: g.emojis.map(e => ({ id: e.id, name: e.name })),
     members: g.members.map(m => db.users[m]).filter(Boolean).map(memberView),
-    voice: voicePresence(g),
+    voice: voicePresence(g, uid),
   };
 }
 // Mensagem do sistema (ex.: "Fulano entrou no grupo")
@@ -600,7 +706,7 @@ function sysMessage(g, text) {
   if (!c) return;
   const msg = { id: newId(), sys: true, text, ts: Date.now() };
   pushMsg(c.id, msg);
-  io.to('g:' + g.id).emit('message', { groupId: g.id, channelId: c.id, msg });
+  toChannel(g, c, 'message', { groupId: g.id, channelId: c.id, msg });
 }
 // Aviso dentro da conversa privada ("Ligação recusada", etc.)
 function dmSys(channelId, text) {
@@ -627,14 +733,60 @@ function removeMember(g, uid, reason) {
       io.to('v:' + c.id).emit('voice:peer-left', { sid });
       io.in(sid).socketsLeave('v:' + c.id);
     }
-    if (!r.size) voice.delete(c.id);
+    if (!r.size) { voice.delete(c.id); setTimeout(() => roomEmptied(c.id), 0); }
   }
   io.in('u:' + uid).socketsLeave('g:' + g.id);
   io.to('u:' + uid).emit('group:removed', { groupId: g.id, reason });
   emitGroup(g);
 }
-const emitGroup = g => io.to('g:' + g.id).emit('group:update', groupView(g));
-const emitPresence = g => io.to('g:' + g.id).emit('voice:presence', { groupId: g.id, voice: voicePresence(g) });
+function emitGroup(g) {
+  for (const m of g.members) io.to('u:' + m).emit('group:update', groupView(g, m));
+  refreshVoice(g);
+}
+function emitPresence(g) {
+  for (const m of g.members) io.to('u:' + m).emit('voice:presence', { groupId: g.id, voice: voicePresence(g, m) });
+}
+// Manda um evento de canal só para quem pode ver esse canal
+function toChannel(g, c, ev, payload, exceptUid) {
+  for (const m of g.members) if (m !== exceptUid && canIn(g, m, c, 'view')) io.to('u:' + m).emit(ev, payload);
+}
+// Depois de mudar permissões: tira da sala quem perdeu acesso e atualiza o que cada um pode fazer na voz
+function refreshVoice(g) {
+  let changed = false;
+  for (const c of g.channels) {
+    if (c.type !== 'voice') continue;
+    const r = voice.get(c.id);
+    if (!r) continue;
+    for (const [sid, p] of [...r.entries()]) {
+      const P = permsIn(g, p.userId, c);
+      if (!g.members.includes(p.userId) || !P.view || !P.connect) {
+        io.to(sid).emit('voice:force', { action: 'disconnect', by: 'as permissões do canal' });
+        dropVoice(c.id, sid);
+        changed = true;
+        continue;
+      }
+      const vp = { speak: !!P.speak, video: !!P.video, stream: !!P.stream, useVAD: !!P.useVAD };
+      io.to(sid).emit('voice:perms', { channelId: c.id, perms: vp, cfg: c.cfg });
+      let st = false;
+      if (!vp.speak && p.mic) { p.mic = false; st = true; }
+      if (!vp.video && p.cam) { p.cam = false; st = true; }
+      if (!vp.stream && p.screen) { p.screen = false; st = true; }
+      if (st) { io.to('v:' + c.id).emit('voice:state', { sid, ...p }); changed = true; }
+    }
+  }
+  if (changed) emitPresence(g);
+}
+// Sala temporária: some quando a última pessoa sai
+function roomEmptied(cid) {
+  const f = findChannel(cid);
+  if (!f || f.c.type !== 'voice' || !f.c.cfg?.temp) return;
+  if (f.g.channels.length <= 1) return;
+  f.g.channels = f.g.channels.filter(c => c.id !== cid);
+  dropChannelMsgs(cid);
+  f.g.audit.unshift({ ts: Date.now(), by: 'Nexo', text: `apagou a sala temporária ${f.c.name} (ficou vazia)` });
+  save();
+  emitGroup(f.g);
+}
 
 // ------------------------------------------------------------------
 // Mensagens diretas (conversa privada entre duas pessoas)
@@ -664,11 +816,11 @@ function channelCtx(cid, uid) {
     return canDm(uid, other) ? { dm: true, peers: p, other } : null;
   }
   const f = findChannel(cid);
-  return f && f.g.members.includes(uid) ? { g: f.g, c: f.c } : null;
+  return f && f.g.members.includes(uid) && canIn(f.g, uid, f.c, 'view') ? { g: f.g, c: f.c } : null;
 }
 function emitCtx(ctx, ev, payload) {
   if (ctx.dm) for (const p of ctx.peers) io.to('u:' + p).emit(ev, payload);
-  else io.to('g:' + ctx.g.id).emit(ev, payload);
+  else toChannel(ctx.g, ctx.c, ev, payload);
 }
 // Garante que a conversa apareça na lista dos dois
 function linkDm(a, b) {
@@ -708,7 +860,7 @@ function unreadFor(uid) {
   for (const g of Object.values(db.groups)) {
     if (!g.members.includes(uid)) continue;
     for (const c of g.channels) {
-      if (c.type !== 'text') continue;
+      if (c.type !== 'text' || !canIn(g, uid, c, 'view') || !canIn(g, uid, c, 'readHistory')) continue;
       const [n, m] = countUnread(uid, c.id, lastRead(uid, c.id, g), true);
       if (n) out[c.id] = [n, m];
     }
@@ -775,7 +927,7 @@ io.on('connection', socket => {
   });
   socket.emit('init', {
     user: { ...publicUser(u), presence: u.presence || 'online' },
-    groups: mine.map(groupView),
+    groups: mine.map(g => groupView(g, u.id)),
     dms: (db.dms[u.id] || []).map(o => dmEntry(u.id, o)).filter(Boolean),
     friends: friendState(u.id),
     unread: unreadFor(u.id),
@@ -895,7 +1047,7 @@ io.on('connection', socket => {
     save();
     io.in('u:' + u.id).socketsJoin('g:' + g.id);
     emitGroup(g);
-    reply(cb, { group: groupView(g) });
+    reply(cb, { group: groupView(g, u.id) });
   });
 
   let badInvites = [];
@@ -915,7 +1067,7 @@ io.on('connection', socket => {
     }
     io.in('u:' + u.id).socketsJoin('g:' + g.id);
     emitGroup(g);
-    reply(cb, { group: groupView(g) });
+    reply(cb, { group: groupView(g, u.id) });
   });
 
   socket.on('group:leave', ({ groupId } = {}, cb) => {
@@ -1071,6 +1223,77 @@ io.on('connection', socket => {
     done(g, cb);
   });
 
+  // Quem pode mexer nas permissões de um canal/categoria e o que pode mudar:
+  // precisa de "Gerenciar cargos" + "Gerenciar canais", só cargos abaixo do seu,
+  // e só pode permitir/negar permissões que você mesmo tem.
+  function owChangeError(g, oldOw, newOw, P) {
+    if (g.ownerId === u.id) return null;
+    if (!can(g, u.id, 'manageRoles')) return 'Para mudar permissões você precisa de "Gerenciar cargos".';
+    const me = rank(g, u.id);
+    const keys = new Set([...Object.keys(oldOw || {}), ...Object.keys(newOw || {})]);
+    for (const key of keys) {
+      const o = oldOw?.[key] || { a: {}, d: {} }, n = newOw?.[key] || { a: {}, d: {} };
+      const changed = CH_PERMS.filter(k => !!o.a?.[k] !== !!n.a?.[k] || !!o.d?.[k] !== !!n.d?.[k]);
+      if (!changed.length) continue;
+      if (key.startsWith('r:')) {
+        const i = g.roles.findIndex(r => 'r:' + r.id === key);
+        if (i >= 0 && me >= i) return `O cargo ${g.roles[i].name} está no mesmo nível ou acima do seu.`;
+      } else if (key.startsWith('m:')) {
+        const t = key.slice(2);
+        if (t !== u.id && (t === g.ownerId || rank(g, t) <= me)) return `${db.users[t]?.username || 'Essa pessoa'} está no mesmo nível ou acima do seu.`;
+      }
+      const lacking = changed.find(k => !P.admin && !P[k]);
+      if (lacking) return `Você não pode mudar uma permissão que não tem ("${lacking}").`;
+    }
+    return null;
+  }
+  const chLabel = c => (c.type === 'voice' ? '🔊' : '#') + c.name;
+  const cleanChName = (type, name) => { name = cleanName(name, 32); return type === 'text' ? name.toLowerCase().replace(/\s+/g, '-') : name; };
+
+  socket.on('category:edit', ({ groupId, id, name, ow } = {}, cb) => {
+    const g = G(groupId, 'manageChannels'); if (!g) return reply(cb, DENY);
+    const k = g.categories.find(x => x.id === id); if (!k) return reply(cb, { error: 'Categoria não encontrada.' });
+    const parts = [];
+    if (typeof name === 'string') {
+      const n = cleanName(name, 32);
+      if (!n) return reply(cb, { error: 'Dê um nome à categoria.' });
+      if (n !== k.name) { parts.push(`nome: ${k.name} → ${n}`); k.name = n; }
+    }
+    if (ow !== undefined) {
+      const nw = cleanOw(g, ow);
+      const err = owChangeError(g, k.ow, nw, permsOf(g, u.id));
+      if (err) return reply(cb, { error: err });
+      if (JSON.stringify(nw) !== JSON.stringify(k.ow || {})) { k.ow = nw; parts.push('permissões'); }
+    }
+    if (parts.length) audit(g, u, `editou a categoria ${k.name} (${parts.join(', ')})`);
+    done(g, cb);
+  });
+
+  socket.on('category:move', ({ groupId, id, dir, before } = {}, cb) => {
+    const g = G(groupId, 'manageChannels'); if (!g) return reply(cb, DENY);
+    const i = g.categories.findIndex(x => x.id === id);
+    if (i < 0) return reply(cb, { error: 'Categoria não encontrada.' });
+    const [k] = g.categories.splice(i, 1);
+    let j;
+    if (before !== undefined) { j = before ? g.categories.findIndex(x => x.id === before) : -1; if (j < 0) j = g.categories.length; }
+    else j = Math.max(0, Math.min(g.categories.length, i + (dir === 'up' ? -1 : 1)));
+    g.categories.splice(j, 0, k);
+    done(g, cb);
+  });
+
+  // Sincronizar: os canais da categoria passam a herdar tudo dela
+  socket.on('category:sync', ({ groupId, id } = {}, cb) => {
+    const g = G(groupId, 'manageChannels'); if (!g) return reply(cb, DENY);
+    const k = g.categories.find(x => x.id === id); if (!k) return reply(cb, { error: 'Categoria não encontrada.' });
+    for (const c of g.channels.filter(c => c.cat === id)) {
+      const err = owChangeError(g, c.ow, {}, permsIn(g, u.id, c));
+      if (err) return reply(cb, { error: `#${c.name}: ${err}` });
+    }
+    for (const c of g.channels) if (c.cat === id) c.ow = {};
+    audit(g, u, `sincronizou as permissões dos canais com a categoria ${k.name}`);
+    done(g, cb);
+  });
+
   socket.on('category:delete', ({ groupId, id } = {}, cb) => {
     const g = G(groupId, 'manageChannels'); if (!g) return reply(cb, DENY);
     const c = g.categories.find(x => x.id === id); if (!c) return reply(cb, { error: 'Categoria não encontrada.' });
@@ -1094,9 +1317,15 @@ io.on('connection', socket => {
     const g = G(groupId, 'manageRoles'); if (!g) return reply(cb, DENY);
     const mine = permsOf(g, u.id);
     // so da para ligar/desligar permissoes que voce mesmo tem
+    // Permissão que não veio no pedido: as novas (v20) ficam como estavam, para um app antigo
+    // não tirar sem querer o "Ver canais" de todo mundo; as antigas seguem a regra de antes.
+    const NEW_PERMS = ['view', 'readHistory', 'attachFiles', 'embedLinks', 'speak', 'stream', 'useVAD'];
     const merge = old => {
       const out = {};
-      for (const k of PERMS) if (mine[k] ? perms?.[k] === true : old[k]) out[k] = true;
+      for (const k of PERMS) {
+        const keep = !perms || !mine[k] || (NEW_PERMS.includes(k) && !(k in perms));
+        if (keep ? old[k] : perms[k] === true) out[k] = true;
+      }
       return out;
     };
     if (id === '@everyone') {
@@ -1212,28 +1441,103 @@ io.on('connection', socket => {
   });
 
   // ---------- Canais ----------
-  socket.on('channel:create', ({ groupId, name, type, cat } = {}, cb) => {
+  socket.on('channel:create', ({ groupId, name, type, cat, topic, priv, roles, cfg } = {}, cb) => {
     const g = db.groups[groupId];
     if (!g || !g.members.includes(u.id) || !can(g, u.id, 'manageChannels')) return reply(cb, { error: 'Você não tem permissão para criar canais.' });
     type = type === 'voice' ? 'voice' : 'text';
-    name = cleanName(name, 32);
-    if (type === 'text') name = name.toLowerCase().replace(/\s+/g, '-');
+    name = cleanChName(type, name);
     if (!name) return reply(cb, { error: 'Dê um nome ao canal.' });
     if (g.channels.length >= 50) return reply(cb, { error: 'Limite de canais atingido.' });
-    const c = { id: newId(), name, type };
+    const c = { id: newId(), name, type, topic: cleanName(topic, 300), cfg: cleanCfg(type, null, cfg), ow: {} };
     if (g.categories.some(x => x.id === cat)) c.cat = cat;
-    audit(g, u, `criou o canal ${type === 'voice' ? '🔊' : '#'}${name}`);
+    if (priv) {
+      // privado: @everyone não vê; quem criou e os cargos escolhidos veem
+      const vis = type === 'voice' ? { view: 1, connect: 1 } : { view: 1 };
+      c.ow.everyone = { a: {}, d: { view: 1 } };
+      c.ow['m:' + u.id] = { a: { ...vis }, d: {} };
+      for (const rid of Array.isArray(roles) ? roles : []) if (g.roles.some(r => r.id === rid)) c.ow['r:' + rid] = { a: { ...vis }, d: {} };
+    }
+    audit(g, u, `criou o canal ${chLabel(c)}${priv ? ' (privado)' : ''}`);
     g.channels.push(c);
     save();
     emitGroup(g);
-    reply(cb, { channel: c });
+    reply(cb, { channel: channelView(g, c, u.id) });
+  });
+
+  // Editar canal: nome, tópico, categoria, configurações e permissões, tudo de uma vez
+  socket.on('channel:update', ({ channelId, name, topic, cat, cfg, ow } = {}, cb) => {
+    const f = findChannel(channelId);
+    if (!f || !f.g.members.includes(u.id)) return reply(cb, { error: 'Canal não encontrado.' });
+    const g = f.g, c = f.c, P = permsIn(g, u.id, c);
+    if (!P.manageChannels) return reply(cb, { error: 'Você não tem permissão para editar este canal.' });
+    const parts = [];
+    if (typeof name === 'string') {
+      const n = cleanChName(c.type, name);
+      if (!n) return reply(cb, { error: 'Dê um nome ao canal.' });
+      if (n !== c.name) { parts.push(`nome: ${c.name} → ${n}`); c.name = n; }
+    }
+    if (typeof topic === 'string') { const t = cleanName(topic, 300); if (t !== (c.topic || '')) { c.topic = t; parts.push('descrição'); } }
+    if (cat !== undefined) {
+      const nc = cat && g.categories.some(x => x.id === cat) ? cat : null;
+      if ((c.cat || null) !== nc) {
+        parts.push(`categoria: ${g.categories.find(x => x.id === c.cat)?.name || 'nenhuma'} → ${g.categories.find(x => x.id === nc)?.name || 'nenhuma'}`);
+        if (nc) c.cat = nc; else delete c.cat;
+      }
+    }
+    if (cfg !== undefined) {
+      const nc = cleanCfg(c.type, c.cfg, cfg);
+      const diff = Object.keys(nc).filter(k => nc[k] !== c.cfg?.[k]);
+      if (diff.length) { c.cfg = nc; parts.push('configurações: ' + diff.join(', ')); }
+    }
+    if (ow !== undefined) {
+      const nw = cleanOw(g, ow);
+      const err = owChangeError(g, c.ow, nw, P);
+      if (err) return reply(cb, { error: err });
+      if (JSON.stringify(nw) !== JSON.stringify(c.ow || {})) { c.ow = nw; parts.push('permissões'); }
+    }
+    if (parts.length) audit(g, u, `editou o canal ${chLabel(c)} (${parts.join('; ')})`);
+    save();
+    emitGroup(g);
+    reply(cb, { ok: true, channel: canIn(g, u.id, c, 'view') ? channelView(g, c, u.id) : null });
+  });
+
+  // O canal volta a herdar tudo da categoria
+  socket.on('channel:sync', ({ channelId } = {}, cb) => {
+    const f = findChannel(channelId);
+    if (!f || !f.g.members.includes(u.id)) return reply(cb, { error: 'Canal não encontrado.' });
+    const P = permsIn(f.g, u.id, f.c);
+    if (!P.manageChannels) return reply(cb, { error: 'Você não tem permissão para editar este canal.' });
+    if (!f.c.cat) return reply(cb, { error: 'Este canal não está em uma categoria.' });
+    const err = owChangeError(f.g, f.c.ow, {}, P);
+    if (err) return reply(cb, { error: err });
+    f.c.ow = {};
+    audit(f.g, u, `sincronizou as permissões de ${chLabel(f.c)} com a categoria`);
+    done(f.g, cb);
+  });
+
+  // Duplicar: cria um canal novo com as mesmas configurações e permissões
+  socket.on('channel:clone', ({ channelId, name } = {}, cb) => {
+    const f = findChannel(channelId);
+    if (!f || !f.g.members.includes(u.id)) return reply(cb, { error: 'Canal não encontrado.' });
+    const g = f.g;
+    if (!canIn(g, u.id, f.c, 'manageChannels') || !can(g, u.id, 'manageChannels')) return reply(cb, { error: 'Você não tem permissão para criar canais.' });
+    if (g.channels.length >= 50) return reply(cb, { error: 'Limite de canais atingido.' });
+    const n = cleanChName(f.c.type, name || (f.c.type === 'text' ? f.c.name + '-copia' : f.c.name + ' (cópia)'));
+    const c = { id: newId(), name: n || f.c.name, type: f.c.type, topic: f.c.topic || '', cfg: { ...f.c.cfg }, ow: JSON.parse(JSON.stringify(f.c.ow || {})) };
+    if (f.c.cat) c.cat = f.c.cat;
+    g.channels.splice(g.channels.indexOf(f.c) + 1, 0, c);
+    audit(g, u, `duplicou ${chLabel(f.c)} como ${chLabel(c)}`);
+    save();
+    emitGroup(g);
+    reply(cb, { channel: channelView(g, c, u.id) });
   });
 
   socket.on('channel:delete', ({ channelId } = {}, cb) => {
     const f = findChannel(channelId);
-    if (!f || !f.g.members.includes(u.id) || !can(f.g, u.id, 'manageChannels')) return reply(cb, { error: 'Sem permissão.' });
+    if (!f || !f.g.members.includes(u.id) || !canIn(f.g, u.id, f.c, 'manageChannels')) return reply(cb, { error: 'Sem permissão.' });
     if (f.g.channels.length <= 1) return reply(cb, { error: 'O grupo precisa ter pelo menos um canal.' });
-    audit(f.g, u, `excluiu o canal ${f.c.name}`);
+    audit(f.g, u, `excluiu o canal ${chLabel(f.c)}`);
+    for (const sid of [...(voice.get(channelId)?.keys() || [])]) { io.to(sid).emit('voice:force', { action: 'disconnect', by: 'a exclusão da sala' }); dropVoice(channelId, sid); }
     f.g.channels = f.g.channels.filter(c => c.id !== channelId);
     if (f.g.sys.channel === channelId) f.g.sys.channel = null;
     dropChannelMsgs(channelId);
@@ -1248,8 +1552,11 @@ io.on('connection', socket => {
     const i = g.channels.findIndex(c => c.id === channelId);
     if (i < 0) return reply(cb, { error: 'Canal não encontrado.' });
     const c = g.channels[i];
+    if (!canIn(g, u.id, c, 'manageChannels')) return reply(cb, { error: 'Você não tem permissão para mover este canal.' });
+    const oldCat = c.cat || null;
     g.channels.splice(i, 1);
     if (cat && g.categories.some(x => x.id === cat)) c.cat = cat; else delete c.cat;
+    if ((c.cat || null) !== oldCat) audit(g, u, `moveu ${chLabel(c)} para ${g.categories.find(x => x.id === c.cat)?.name || 'sem categoria'}`);
     const j = before ? g.channels.findIndex(x => x.id === before) : -1;
     if (j < 0) g.channels.push(c); else g.channels.splice(j, 0, c);
     save();
@@ -1258,11 +1565,24 @@ io.on('connection', socket => {
   });
 
   // ---------- Mensagens ----------
+  // O que a pessoa pode ler do histórico deste canal
+  function visibleHistory(ctx, uid, cid) {
+    const all = db.messages[cid] || [];
+    if (ctx.dm) return all;
+    const P = permsIn(ctx.g, uid, ctx.c);
+    if (!P.readHistory) return [];
+    if (ctx.c.cfg?.newHistory === false && !P.manageMessages) {
+      const since = ctx.g.joined[uid] || 0;
+      return all.filter(m => m.ts >= since);
+    }
+    return all;
+  }
   // Sem nada: as 80 mais recentes. before: 60 anteriores a uma mensagem.
   // around: a partir de um pouco antes da mensagem até a mais recente (para "ir até").
   socket.on('channel:history', ({ channelId, before, around } = {}, cb) => {
-    if (!channelCtx(channelId, u.id)) return reply(cb, { error: 'Canal não encontrado.' });
-    const all = db.messages[channelId] || [];
+    const hctx = channelCtx(channelId, u.id);
+    if (!hctx) return reply(cb, { error: 'Canal não encontrado.' });
+    const all = visibleHistory(hctx, u.id, channelId);
     let start, end = all.length;
     if (around) {
       const i = all.findIndex(m => m.id === around);
@@ -1289,7 +1609,7 @@ io.on('connection', socket => {
       for (const g of Object.values(db.groups)) {
         if (!g.members.includes(u.id) || (groupId && groupId !== '@me' && g.id !== groupId)) continue;
         if (groupId === '@me') continue;
-        for (const c of g.channels) if (c.type === 'text') places.push({ cid: c.id, ctx: { g, c } });
+        for (const c of g.channels) if (c.type === 'text' && canIn(g, u.id, c, 'view')) places.push({ cid: c.id, ctx: { g, c } });
       }
       if (!groupId || groupId === '@me') {
         for (const other of db.dms[u.id] || []) {
@@ -1301,7 +1621,7 @@ io.on('connection', socket => {
     }
     const hits = [];
     for (const { cid, ctx } of places) {
-      for (const m of db.messages[cid] || []) {
+      for (const m of visibleHistory(ctx, u.id, cid)) {
         if (m.sys) continue;
         const who = db.users[m.userId];
         const hay = fold(`${m.text || ''} ${m.att?.name || ''} ${who?.username || m.username} ${who?.display || ''}`);
@@ -1326,7 +1646,7 @@ io.on('connection', socket => {
     if (!ctx || (ctx.c && ctx.c.type !== 'text')) return;
     const data = { channelId, userId: u.id };
     if (ctx.dm) io.to('u:' + ctx.other).emit('typing', data);
-    else socket.to('g:' + ctx.g.id).emit('typing', data);
+    else if (canIn(ctx.g, u.id, ctx.c, 'sendMessages')) toChannel(ctx.g, ctx.c, 'typing', data, u.id);
   });
 
   let lastMsgs = [];
@@ -1334,12 +1654,27 @@ io.on('connection', socket => {
   socket.on('message:send', ({ channelId, text, replyTo, att } = {}, cb) => {
     const ctx = channelCtx(channelId, u.id);
     if (!ctx || (ctx.c && ctx.c.type !== 'text')) return reply(cb, { error: 'Canal não encontrado.' });
-    text = String(text || '').trim().slice(0, 2000);
+    text = String(text || '').trim();
     const file = att && db.files[att.id] ? { id: att.id, ...db.files[att.id] } : null;
     if (att && !file) return reply(cb, { error: 'O arquivo não foi encontrado. Tente enviar de novo.' });
     if (!text && !file) return reply(cb, { error: 'Mensagem vazia.' });
-    if (ctx.g && !can(ctx.g, u.id, 'sendMessages')) return reply(cb, { error: 'Você não tem permissão para enviar mensagens.' });
     const now = Date.now();
+    if (ctx.g) {
+      // regras do canal (conferidas aqui no servidor: não dá para contornar mexendo no app)
+      const P = permsIn(ctx.g, u.id, ctx.c), cfg = ctx.c.cfg || TEXT_CFG;
+      if (!P.sendMessages) return reply(cb, { error: 'Você não tem permissão para enviar mensagens neste canal.' });
+      if (text.length > cfg.maxLen) return reply(cb, { error: `Este canal aceita no máximo ${cfg.maxLen} caracteres por mensagem.` });
+      if (file && !P.attachFiles) return reply(cb, { error: 'Não é permitido enviar arquivos neste canal.' });
+      if (file && file.size > cfg.maxFileMB * 1048576) return reply(cb, { error: `Este canal aceita arquivos de até ${cfg.maxFileMB} MB.` });
+      if (!P.embedLinks && /(https?:\/\/|www\.)\S+/i.test(text)) return reply(cb, { error: 'Não é permitido enviar links neste canal.' });
+      if (replyTo && cfg.replies === false && !P.manageMessages) return reply(cb, { error: 'Respostas estão desativadas neste canal.' });
+      if (cfg.slow && !P.manageMessages && !P.manageChannels) {
+        const key = u.id + ':' + ctx.c.id, last = slowLast.get(key) || 0, wait = Math.ceil((last + cfg.slow * 1000 - now) / 1000);
+        if (wait > 0) return reply(cb, { error: `Modo lento: espere ${wait} s para mandar outra mensagem.`, slow: wait });
+        slowLast.set(key, now);
+      }
+    }
+    text = text.slice(0, 2000);
     lastMsgs = lastMsgs.filter(t => now - t < 5000);
     if (lastMsgs.length >= 8) return reply(cb, { error: 'Calma! Você está enviando rápido demais.' });
     lastMsgs.push(now);
@@ -1377,6 +1712,13 @@ io.on('connection', socket => {
     const l = locate(channelId, id);
     if (!l) return reply(cb, { error: 'Mensagem não encontrada.' });
     if (l.m.userId !== u.id) return reply(cb, { error: 'Você só pode editar as suas mensagens.' });
+    if (l.g) {
+      const P = permsIn(l.g, u.id, l.ctx.c);
+      if (l.ctx.c.cfg?.edit === false && !P.manageMessages) return reply(cb, { error: 'A edição de mensagens está desativada neste canal.' });
+      if (!P.sendMessages) return reply(cb, { error: 'Você não pode escrever neste canal.' });
+      if (String(text || '').trim().length > (l.ctx.c.cfg?.maxLen || 2000)) return reply(cb, { error: `Este canal aceita no máximo ${l.ctx.c.cfg.maxLen} caracteres.` });
+      if (!P.embedLinks && /(https?:\/\/|www\.)\S+/i.test(String(text || ''))) return reply(cb, { error: 'Não é permitido enviar links neste canal.' });
+    }
     text = String(text || '').trim().slice(0, 2000);
     if (!text && !l.m.att) return reply(cb, { error: 'Mensagem vazia.' });
     l.m.text = text;
@@ -1391,7 +1733,9 @@ io.on('connection', socket => {
   socket.on('message:delete', ({ channelId, id } = {}, cb) => {
     const l = locate(channelId, id);
     if (!l) return reply(cb, { error: 'Mensagem não encontrada.' });
-    if (l.m.userId !== u.id && !(l.g && can(l.g, u.id, 'manageMessages'))) return reply(cb, { error: 'Sem permissão.' });
+    const modDel = l.g && canIn(l.g, u.id, l.ctx.c, 'manageMessages');
+    if (l.m.userId !== u.id && !modDel) return reply(cb, { error: 'Sem permissão.' });
+    if (l.m.userId === u.id && l.g && l.ctx.c.cfg?.del === false && !modDel) return reply(cb, { error: 'A exclusão de mensagens está desativada neste canal.' });
     if (l.m.userId !== u.id && l.g) audit(l.g, u, `excluiu uma mensagem de ${l.m.username || 'sistema'}`);
     l.arr.splice(l.arr.indexOf(l.m), 1);
     if (l.m.att) delFile(l.m.att.id);
@@ -1404,7 +1748,7 @@ io.on('connection', socket => {
     const l = locate(channelId, id);
     if (!l) return reply(cb, { error: 'Mensagem não encontrada.' });
     emoji = String(emoji || '').trim();
-    if (l.g && !can(l.g, u.id, 'addReactions')) return reply(cb, { error: 'Você não tem permissão para reagir.' });
+    if (l.g && !canIn(l.g, u.id, l.ctx.c, 'addReactions')) return reply(cb, { error: 'Você não tem permissão para reagir neste canal.' });
     if (!emoji || emoji.length > 30 || /[\s<>&"']/.test(emoji)) return reply(cb, { error: 'Reação inválida.' });
     const rs = (l.m.reactions ||= {});
     const list = rs[emoji] || [];
@@ -1428,7 +1772,7 @@ io.on('connection', socket => {
     const cid = currentVoice;
     currentVoice = null;
     const r = voice.get(cid);
-    if (r) { r.delete(socket.id); if (!r.size) voice.delete(cid); }
+    if (r) { r.delete(socket.id); if (!r.size) { voice.delete(cid); setTimeout(() => { if (!voice.get(cid)) roomEmptied(cid); }, 0); } }
     socket.to('v:' + cid).emit('voice:peer-left', { sid: socket.id });
     socket.leave('v:' + cid);
     const pr = dmPeers(cid);
@@ -1456,7 +1800,14 @@ io.on('connection', socket => {
     } else {
       f = findChannel(channelId);
       if (!f || !f.g.members.includes(u.id) || f.c.type !== 'voice') return reply(cb, { error: 'Sala não encontrada.' });
-      if (!can(f.g, u.id, 'connect')) return reply(cb, { error: 'Você não tem permissão para entrar em salas de voz.' });
+      const P = permsIn(f.g, u.id, f.c);
+      if (!P.view || !P.connect) return reply(cb, { error: 'Você não tem permissão para entrar nesta sala.' });
+      const room = voice.get(channelId);
+      const already = room && [...room.values()].some(x => x.userId === u.id);
+      const boss = P.moveMembers || P.manageChannels;
+      if (!already && f.c.cfg?.locked && !boss) return reply(cb, { error: 'Esta sala está fechada para novas pessoas.' });
+      const people = room ? new Set([...room.values()].map(x => x.userId)).size : 0;
+      if (!already && f.c.cfg?.limit && people >= f.c.cfg.limit && !boss) return reply(cb, { error: `Sala cheia (limite de ${f.c.cfg.limit} pessoas).` });
     }
     leaveVoice();
     const r = voice.get(channelId) || new Map();
@@ -1470,7 +1821,8 @@ io.on('connection', socket => {
     currentVoice = channelId;
     socket.join('v:' + channelId);
     socket.to('v:' + channelId).emit('voice:peer-joined', { sid: socket.id, ...me });
-    reply(cb, { peers, sid: socket.id, dupe });
+    const VP = f ? permsIn(f.g, u.id, f.c) : null;
+    reply(cb, { peers, sid: socket.id, dupe, perms: VP ? { speak: !!VP.speak, video: !!VP.video, stream: !!VP.stream, useVAD: !!VP.useVAD } : null, cfg: f ? f.c.cfg : null });
     if (pr) {
       const other = pr.find(x => x !== u.id);
       // primeiro a entrar numa conversa privada = está ligando
@@ -1505,7 +1857,12 @@ io.on('connection', socket => {
     for (const k of ['mic', 'cam', 'screen', 'deaf']) if (typeof st[k] === 'boolean') p[k] = st[k];
     if (p.fmute || p.fdeaf) p.mic = false;
     const fv = dmPeers(currentVoice) ? null : findChannel(currentVoice);
-    if (fv && !can(fv.g, u.id, 'video')) { p.cam = false; p.screen = false; }
+    if (fv) {
+      const P = permsIn(fv.g, u.id, fv.c);
+      if (!P.speak) p.mic = false;
+      if (!P.video) p.cam = false;
+      if (!P.stream) p.screen = false;
+    }
     socket.to('v:' + currentVoice).emit('voice:state', { sid: socket.id, ...p });
     notifyVoice(currentVoice);
   });
@@ -1522,7 +1879,7 @@ io.on('connection', socket => {
     const need = action === 'move' ? 'moveMembers'
       : action === 'disconnect' ? 'disconnectMembers'
       : (action === 'deafen' || action === 'undeafen') ? 'deafenMembers' : 'muteMembers';
-    if (!can(g, u.id, need)) return reply(cb, { error: 'Você não tem permissão para isso.' });
+    if (!canIn(g, u.id, f.c, need)) return reply(cb, { error: 'Você não tem permissão para isso nesta sala.' });
     if (p.userId !== u.id && (p.userId === g.ownerId || rank(g, u.id) >= rank(g, p.userId)))
       return reply(cb, { error: 'Essa pessoa está no mesmo nível ou acima do seu.' });
     const who = db.users[p.userId]?.display || p.username;
@@ -1552,6 +1909,9 @@ io.on('connection', socket => {
       const dest = g.channels.find(c => c.id === to && c.type === 'voice');
       if (!dest) return reply(cb, { error: 'Sala não encontrada.' });
       if (dest.id === cid) return reply(cb, { ok: true });
+      if (!canIn(g, u.id, dest, 'moveMembers')) return reply(cb, { error: 'Você não pode mover pessoas para essa sala.' });
+      const TP = permsIn(g, p.userId, dest);
+      if (!TP.view || !TP.connect) return reply(cb, { error: 'Essa pessoa não tem acesso a essa sala.' });
       for (const [dsid] of devs) io.to(dsid).emit('voice:force', { action, channelId: dest.id, by: u.username });
       audit(g, u, `moveu ${who} para a sala ${dest.name}`);
     } else return reply(cb, { error: 'Ação inválida.' });
@@ -1605,6 +1965,23 @@ io.on('connection', socket => {
 });
 
 // ------------------------------------------------------------------
+// Retenção: apaga mensagens mais antigas que o limite do canal (de hora em hora)
+function pruneRetention() {
+  const now = Date.now();
+  for (const g of Object.values(db.groups)) for (const c of g.channels) {
+    const days = c.cfg?.retention;
+    if (!days || c.type !== 'text') continue;
+    const arr = db.messages[c.id];
+    if (!arr?.length) continue;
+    const keep = arr.filter(m => now - m.ts < days * 864e5);
+    if (keep.length === arr.length) continue;
+    for (const m of arr) if (!keep.includes(m) && m.att) delFile(m.att.id);
+    db.messages[c.id] = keep;
+    touchMsgs(c.id);
+  }
+}
+setInterval(pruneRetention, 3600e3).unref();
+
 setInterval(() => {
   let n = 0;
   for (const [t, v] of Object.entries(db.tokens)) if (typeof v === 'object' && Date.now() - v.at > SESSION_DAYS * 864e5) { delete db.tokens[t]; n++; }

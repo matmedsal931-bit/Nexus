@@ -142,6 +142,11 @@ async function accVoz(body) {
       ${canPickOutput() ? `<label>Saída de som<select id="av-out">${opts('audiooutput', prefs.out)}</select></label>` : ''}
       <label>Câmera<select id="av-cam">${opts('videoinput', prefs.cam)}</select></label>
     </div>
+    <div class="set-block"><div class="pf-h">Modo de entrada</div>
+      <div class="seg" id="av-mode">${[['vad', 'Detecção de voz'], ['ptt', 'Pressionar para falar']].map(([k, v]) => `<button data-m="${k}" class="${(prefs.inputMode || 'vad') === k ? 'on' : ''}">${v}</button>`).join('')}</div>
+      <div class="row l ${prefs.inputMode === 'ptt' ? '' : 'hidden'}" id="av-pttrow" style="margin-top:10px;gap:10px;align-items:center">
+        <span>Tecla:</span><button class="btn sm" id="av-key">${esc(keyLabel(prefs.pttKey))}</button><span class="muted small">clique e aperte a tecla</span></div>
+      <p class="muted small">Pressionar para falar funciona com o Nexo aberto na frente (o navegador não recebe teclas de outros programas). No celular aparece o botão "Segure para falar". Algumas salas exigem esse modo.</p></div>
     <div class="set-block"><div class="pf-h">Sensibilidade do microfone</div>
       <div class="seg" id="av-gate">${[['auto', 'Automática'], ['manual', 'Manual'], ['off', 'Sempre transmitir']].map(([k, v]) => `<button data-g="${k}" class="${prefs.gate === k ? 'on' : ''}">${v}</button>`).join('')}</div>
       <div class="mic-test"><button class="btn" id="av-test">Testar</button>
@@ -176,6 +181,24 @@ async function accVoz(body) {
   };
   q('#av-echo').onchange = e => { setPref('echo', e.target.checked); setPref('nsSet', 1); reMic(); };
   q('#av-agc').onchange = e => { setPref('agc', e.target.checked); reMic(); };
+  q('#av-mode').onclick = e => {
+    const b = e.target.closest('[data-m]'); if (!b) return;
+    setPref('inputMode', b.dataset.m);
+    q('#av-mode').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    q('#av-pttrow').classList.toggle('hidden', b.dataset.m !== 'ptt');
+    applyPtt(); if (call.channelId) renderControls();
+  };
+  q('#av-key').onclick = () => {
+    const b = q('#av-key');
+    b.textContent = 'Aperte uma tecla…';
+    const grab = e => {
+      e.preventDefault(); e.stopPropagation();
+      if (e.code !== 'Escape') setPref('pttKey', e.code);
+      b.textContent = keyLabel(prefs.pttKey);
+      document.removeEventListener('keydown', grab, true);
+    };
+    document.addEventListener('keydown', grab, true);
+  };
   q('#av-gate').onclick = e => {
     const b = e.target.closest('[data-g]'); if (!b) return;
     setPref('gate', b.dataset.g);

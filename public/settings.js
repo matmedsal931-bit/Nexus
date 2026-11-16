@@ -8,7 +8,7 @@
 const PERM_INFO = [
   ['admin', 'Administrador', 'Tem todas as permissões abaixo. Dê com cuidado.'],
   ['manageGroup', 'Gerenciar grupo', 'Mudar nome, ícone, faixa, descrição, convite e mensagens do sistema.'],
-  ['manageChannels', 'Gerenciar canais', 'Criar e excluir canais e categorias.'],
+  ['manageChannels', 'Gerenciar canais', 'Criar, editar, mover e excluir canais e categorias.'],
   ['manageRoles', 'Gerenciar cargos', 'Criar, editar e dar cargos que estejam abaixo do cargo mais alto da pessoa.'],
   ['manageEmoji', 'Gerenciar emojis', 'Adicionar e remover os emojis personalizados do grupo.'],
   ['kick', 'Expulsar membros', 'Remover membros. Quem foi expulso pode voltar com um convite.'],
@@ -21,8 +21,15 @@ const PERM_INFO = [
   ['disconnectMembers', 'Desconectar membros', 'Tirar alguém da chamada de voz.'],
   ['sendMessages', 'Enviar mensagens', 'Escrever nos canais de texto.'],
   ['addReactions', 'Adicionar reações', 'Reagir às mensagens com emoji.'],
+  ['view', 'Ver canais', 'Ver os canais do grupo. Dá para esconder canais específicos nas permissões de cada canal.'],
+  ['readHistory', 'Ver mensagens anteriores', 'Ler o histórico dos canais de texto.'],
+  ['attachFiles', 'Enviar imagens e arquivos', 'Anexar arquivos nas mensagens.'],
+  ['embedLinks', 'Enviar links', 'Mandar mensagens com endereços de sites.'],
   ['connect', 'Conectar', 'Entrar nas salas de voz.'],
-  ['video', 'Vídeo', 'Ligar a câmera e transmitir a tela nas salas de voz.'],
+  ['speak', 'Falar', 'Usar o microfone nas salas de voz.'],
+  ['video', 'Câmera', 'Ligar a câmera nas salas de voz.'],
+  ['stream', 'Transmitir a tela', 'Compartilhar a tela nas salas de voz.'],
+  ['useVAD', 'Detecção de voz', 'Falar sem segurar uma tecla. Sem isso, só com "pressionar para falar".'],
 ];
 const ROLE_COLORS = ['#1abc9c', '#2ecc71', '#3498db', '#9b59b6', '#e91e63', '#f1c40f', '#e67e22', '#e74c3c', '#95a5a6', '#607d8b',
   '#11806a', '#1f8b4c', '#206694', '#71368a', '#ad1457', '#c27c0e', '#a84300', '#992d22', '#979c9f', '#546e7a'];
@@ -69,6 +76,7 @@ const gBannerStyle = (g, anim = false) => g.bv
 function openSettings(gid, tab) {
   const g = group(gid);
   if (!g || !canOpenSettings(g)) return toast('Você não tem permissão para abrir as configurações.');
+  if (typeof CH !== 'undefined' && CH.mode) { if (chDirty()) return nagUnsaved(); CH.mode = null; }
   SET.gid = gid;
   SET.role = null;
   SET.tab = tab && SET_TABS.some(t => t.id === tab && tabAllowed(g, t)) ? tab : SET_TABS.find(t => tabAllowed(g, t)).id;
@@ -76,7 +84,7 @@ function openSettings(gid, tab) {
   $('#settings').classList.remove('hidden');
   renderSettings();
 }
-function closeSettings() { window.onSettingsClose?.(); $('#settings').classList.add('hidden'); SET.gid = null; $('#set-body').innerHTML = ''; }
+function closeSettings() { if (window.beforeSettingsClose && window.beforeSettingsClose() === false) return; window.onSettingsClose?.(); $('#settings').classList.add('hidden'); SET.gid = null; $('#set-body').innerHTML = ''; }
 $('#set-close').onclick = closeSettings;
 
 // chamado pelo app quando o grupo muda (para a tela acompanhar em tempo real)
@@ -336,7 +344,7 @@ function roleEditor(g, body) {
   }
   q('#sr-save')?.addEventListener('click', async () => {
     const perms = {};
-    body.querySelectorAll('[data-p]').forEach(i => { if (i.checked) perms[i.dataset.p] = true; });
+    body.querySelectorAll('[data-p]').forEach(i => { perms[i.dataset.p] = i.checked; });
     document.activeElement?.blur();
     await act('role:edit', { groupId: g.id, id: r.id, name: q('#sr-name')?.value, color: every ? undefined : st.color, perms }, 'Cargo salvo!');
   });

@@ -44,6 +44,7 @@ const I = {
   users: P('<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>'),
   download: P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>'),
   x: P('<path d="M18 6 6 18M6 6l12 12"/>'),
+  check: P('<path d="m5 12 5 5L20 7"/>'),
   chev: P('<path d="m6 9 6 6 6-6"/>'),
   gear: P('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.8 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.8H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
   vol: P('<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>'),
@@ -64,6 +65,14 @@ const I = {
   eye: P('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
   vol2: P('<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>'),
   volX: P('<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>'),
+  lockI: P('<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>'),
+  clock: P('<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>'),
+  gear: P('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+  shield: P('<path d="M12 3 4 6v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V6z"/>'),
+  idI: P('<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 9h4M7 13h6M15 9h2"/>'),
+  dup: P('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>'),
+  up: P('<path d="m18 15-6-6-6 6"/>'),
+  down: P('<path d="m6 9 6 6 6-6"/>'),
   folder: P('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2zM12 11v6M9 14h6"/>'),
 };
 
@@ -95,7 +104,8 @@ const initial = n => esc((n || '?').trim().charAt(0) || '?');
 // ---- Cargos e permissoes (mesma regra do servidor, usada so para a interface) ----
 const PERM_KEYS = ['admin', 'manageGroup', 'manageChannels', 'manageRoles', 'manageEmoji', 'kick', 'ban',
   'manageMessages', 'viewAudit', 'muteMembers', 'deafenMembers', 'moveMembers', 'disconnectMembers',
-  'sendMessages', 'addReactions', 'connect', 'video'];
+  'sendMessages', 'addReactions', 'connect', 'video',
+  'view', 'readHistory', 'attachFiles', 'embedLinks', 'speak', 'stream', 'useVAD'];
 function permsOf(g, uid) {
   const out = {};
   if (!g) return out;
@@ -107,6 +117,9 @@ function permsOf(g, uid) {
   return out;
 }
 const can = (g, p, uid = S.user?.id) => !!permsOf(g, uid)[p];
+// Permissão MINHA dentro de um canal (o servidor já manda calculada em c.p)
+const canCh = (c, p) => c?.p ? !!c.p[p] : true;
+const chCfg = c => c?.cfg || {};
 function rankOf(g, uid) {
   if (g.ownerId === uid) return -1;
   const mine = g.memberRoles?.[uid] || [];
@@ -479,6 +492,8 @@ function connect() {
   sock.on('voice:state', p => onPeerState(p));
   sock.on('signal', ({ from, data }) => onSignal(from, data));
   sock.on('voice:watch', onWatchRequest);
+  // as permissões da sala mudaram enquanto estou nela
+  sock.on('voice:perms', ({ channelId, perms, cfg }) => { if (call.channelId === channelId) applyVoicePerms(perms, cfg, false); });
   // outro aparelho meu mandou ligar/desligar o microfone ou o áudio deste
   sock.on('voice:self', async ({ action, from }) => {
     if (!call.channelId) return;
@@ -772,7 +787,6 @@ function renderChannels() {
     list.innerHTML = `<p class="muted" style="padding:10px">Você ainda não está em nenhum grupo.</p>`;
     return;
   }
-  const canCh = can(g, 'manageChannels');
   if (g.bv) {
     head.style.background = `center/cover no-repeat url("/api/gbanner/${esc(g.id)}?v=${g.bv}")`;
     head.classList.add('has-banner');
@@ -785,20 +799,25 @@ function renderChannels() {
   head.querySelector('#g-menu').onclick = e => openGroupMenu(g, e.currentTarget);
   head.querySelector('[data-act=invite]').onclick = () => inviteModal(g);
 
-  const del = c => canCh ? `<span class="icon-btn del" data-del="${c.id}" title="Excluir">${I.trash}</span>` : '';
+  const gear = c => canCh(c, 'manageChannels') ? `<span class="icon-btn del" data-edit="${c.id}" title="Editar canal">${I.gear}</span>` : '';
+  const lock = c => c.priv ? `<span class="ch-ic" title="Canal privado">${I.lockI}</span>` : '';
+  const collapsed = new Set(JSON.parse(store.get('nexo_col_' + g.id) || '[]'));
   const row = c => {
     if (c.type === 'text') {
       const active = c.id === S.cid && S.view === 'chat';
       const un = unreadOf(c.id);
-      return `<button class="ch ${active ? 'active' : ''} ${un ? 'unread' : ''}" data-cid="${c.id}" data-ch="${c.id}">${I.hash}<span class="label">${esc(c.name)}</span>${un ? `<span class="cnt">${badgeTxt(un)}</span>` : ''}${del(c)}</button>`;
+      return `<button class="ch ${active ? 'active' : ''} ${un ? 'unread' : ''}" data-cid="${c.id}" data-ch="${c.id}" title="${esc(c.topic || '')}">${I.hash}<span class="label">${esc(c.name)}</span>${lock(c)}${chCfg(c).slow ? `<span class="ch-ic" title="Modo lento">${I.clock}</span>` : ''}${un ? `<span class="cnt">${badgeTxt(un)}</span>` : ''}${gear(c)}</button>`;
     }
     const people = g.voice?.[c.id] || [];
     const active = call.channelId === c.id && S.view === 'voice';
-    return `<button class="ch ${active ? 'active' : ''}" data-vid="${c.id}" data-ch="${c.id}">${I.speaker}<span class="label">${esc(c.name)}</span>${del(c)}</button>`
+    const lim = chCfg(c).limit;
+    const n = new Set(people.map(p => p.userId)).size;
+    return `<button class="ch ${active ? 'active' : ''}" data-vid="${c.id}" data-ch="${c.id}" title="${esc(c.topic || '')}">${I.speaker}<span class="label">${esc(c.name)}</span>${lock(c)}${chCfg(c).temp ? `<span class="ch-ic" title="Sala temporária: some quando ficar vazia">${I.clock}</span>` : ''}${chCfg(c).locked ? `<span class="ch-ic" title="Fechada para novas pessoas">${I.shield}</span>` : ''}${lim ? `<span class="lim ${n >= lim ? 'full' : ''}" title="Limite de pessoas">${n}/${lim}</span>` : ''}${gear(c)}</button>`
       + (people.length ? `<div class="vusers">` + dedupeVoice(people).map(p => `<div class="vuser${isSpeaking(p.userId) ? ' speaking' : ''}" data-sid="${esc(p.sid)}" data-uid="${esc(p.userId)}" title="Opções">${avatar(p, 'sm')}<span class="nm">${esc(nameOf(p.userId, p.username))}</span>
         ${p.screen ? '<span class="live">AO VIVO</span>' : ''}${p.cam ? I.cam : ''}${p.fdeaf || p.deaf ? `<span class="${p.fdeaf ? 'fm' : ''}">${I.headOff}</span>` : ''}${p.fmute ? `<span class="fm">${I.micOff}</span>` : (p.mic ? '' : I.micOff)}</div>`).join('') + `</div>` : '');
   };
-  const add = (type, cat = '') => canCh ? `<button class="icon-btn" data-add="${type}" data-cat="${cat}" title="Criar canal">${I.plus}</button>` : '';
+  const canMk = can(g, 'manageChannels');
+  const add = (type, cat = '') => canMk ? `<button class="icon-btn" data-add="${type}" data-cat="${cat}" title="Criar canal">${I.plus}</button>` : '';
   const cats = g.categories || [];
   const ids = new Set(cats.map(c => c.id));
   const loose = g.channels.filter(c => !c.cat || !ids.has(c.cat));
@@ -808,10 +827,28 @@ function renderChannels() {
   if (lv.length || !cats.length) html += `<div class="sec" data-cat="">Salas de voz ${add('voice')}</div>` + lv.map(row).join('');
   for (const cat of cats) {
     const cs = g.channels.filter(c => c.cat === cat.id);
-    html += `<div class="sec cat" data-cat="${cat.id}">${esc(cat.name)} <span>${add('text', cat.id)}${canCh ? `<button class="icon-btn" data-delcat="${cat.id}" title="Excluir categoria">${I.trash}</button>` : ''}</span></div>`
-      + cs.filter(c => c.type === 'text').map(row).join('') + cs.filter(c => c.type === 'voice').map(row).join('');
+    const col = collapsed.has(cat.id);
+    // recolhida: só aparece o canal aberto e as salas com gente
+    const shown = col ? cs.filter(c => c.id === S.cid || c.id === call.channelId || (c.type === 'voice' && (g.voice?.[c.id] || []).length)) : cs;
+    html += `<div class="sec cat ${col ? 'collapsed' : ''}" data-cat="${cat.id}" data-catm="${cat.id}"><button class="cat-t" data-col="${cat.id}" title="${col ? 'Expandir' : 'Recolher'}">${I.chev}<span>${esc(cat.name)}</span></button><span>${add('text', cat.id)}</span></div>`
+      + shown.filter(c => c.type === 'text').map(row).join('') + shown.filter(c => c.type === 'voice').map(row).join('');
   }
   list.innerHTML = html;
+  list.querySelectorAll('[data-col]').forEach(b => b.onclick = e => {
+    e.stopPropagation();
+    const id = b.dataset.col;
+    collapsed.has(id) ? collapsed.delete(id) : collapsed.add(id);
+    store.set('nexo_col_' + g.id, JSON.stringify([...collapsed]));
+    renderChannels();
+  });
+  list.querySelectorAll('[data-catm]').forEach(el => {
+    const open = (x, y) => openCategoryMenu(g, el.dataset.catm, x, y);
+    el.oncontextmenu = e => { e.preventDefault(); open(e.clientX, e.clientY); };
+    let t = null;
+    el.addEventListener('touchstart', e => { const x = e.touches[0]; t = setTimeout(() => { navigator.vibrate?.(15); open(x.clientX, x.clientY); }, 480); }, { passive: true });
+    ['touchmove', 'touchend', 'touchcancel'].forEach(ev => el.addEventListener(ev, () => clearTimeout(t), { passive: true }));
+  });
+  list.querySelectorAll('[data-edit]').forEach(b => b.onclick = e => { e.stopPropagation(); openChannelSettings(b.dataset.edit); });
   list.querySelectorAll('[data-cid]').forEach(b => b.onclick = () => openTextChannel(b.dataset.cid));
   list.querySelectorAll('[data-vid]').forEach(b => b.onclick = () => joinCall(b.dataset.vid));
   list.querySelectorAll('.vuser[data-sid]').forEach(el => el.onclick = e => {
@@ -822,20 +859,12 @@ function renderChannels() {
     else openProfile(el.dataset.uid);
   });
   list.querySelectorAll('[data-add]').forEach(b => b.onclick = e => { e.stopPropagation(); channelModal(g, b.dataset.add, b.dataset.cat); });
-  list.querySelectorAll('[data-del]').forEach(b => b.onclick = e => { e.stopPropagation(); deleteChannelModal(b.dataset.del); });
   list.querySelectorAll('.ch[data-ch]').forEach(el => {
     const open = e => { e.preventDefault(); openChannelMenu(el.dataset.ch, e.clientX ?? 0, e.clientY ?? 0); };
     el.oncontextmenu = open;
     let t = null;
     el.addEventListener('touchstart', e => { const x = e.touches[0]; t = setTimeout(() => { navigator.vibrate?.(15); openChannelMenu(el.dataset.ch, x.clientX, x.clientY); }, 480); }, { passive: true });
     ['touchmove', 'touchend', 'touchcancel'].forEach(ev => el.addEventListener(ev, () => clearTimeout(t), { passive: true }));
-  });
-  list.querySelectorAll('[data-delcat]').forEach(b => b.onclick = () => {
-    const cat = cats.find(c => c.id === b.dataset.delcat);
-    confirmModal(`Excluir a categoria "${cat.name}"?`, 'Os canais dela continuam existindo, só ficam sem categoria.', 'Excluir', async () => {
-      const r = await emit('category:delete', { groupId: g.id, id: cat.id });
-      if (r.error) toast(r.error);
-    });
   });
 }
 
@@ -873,21 +902,34 @@ function renderDMs(head, list) {
 function openChannelMenu(cid, x, y) {
   const f = findChannel(cid);
   if (!f) return;
-  const g = f.g, canCh = can(g, 'manageChannels');
+  const g = f.g, c = f.c, man = canCh(c, 'manageChannels'), perms = man && (can(g, 'manageRoles') || g.ownerId === S.user.id);
   const cats = g.categories || [];
-  ctx.innerHTML = `<div class="vol-h ic">${f.c.type === 'voice' ? I.speaker : I.hash} ${esc(f.c.name)}</div>
-    ${f.c.type === 'text' ? `<button class="item" data-a="open">${I.hash}Abrir canal</button>` : `<button class="item" data-a="join">${I.speaker}Entrar na sala</button>`}
-    ${canCh && cats.length ? `<div class="vol-h">Mover para categoria</div>
-      ${[{ id: '', name: 'Sem categoria' }, ...cats].map(c => `<button class="item" data-cat="${esc(c.id)}">${I.folder}${esc(c.name)}${(f.c.cat || '') === c.id ? '<span class="sub">✓</span>' : ''}</button>`).join('')}` : ''}
-    ${canCh ? `<div class="sep"></div><button class="item danger" data-a="del">${I.trash}Excluir canal</button>` : ''}`;
+  ctx.innerHTML = `<div class="vol-h ic">${c.type === 'voice' ? I.speaker : I.hash} ${esc(c.name)}</div>
+    ${c.type === 'text' ? `<button class="item" data-a="open">${I.hash}Abrir canal</button>` : `<button class="item" data-a="join">${I.speaker}Entrar na sala</button>`}
+    ${man ? `<button class="item" data-a="edit">${I.gear}Editar canal</button>` : ''}
+    ${perms ? `<button class="item" data-a="perms">${I.shield}Editar permissões</button>` : ''}
+    <button class="item" data-a="invite">${I.invite}Convidar pessoas</button>
+    <button class="item" data-a="id">${I.idI}Copiar ID do canal</button>
+    ${can(g, 'manageChannels') ? `<div class="sep"></div><button class="item" data-a="new">${I.plus}Criar canal</button>` : ''}
+    ${man && can(g, 'manageChannels') ? `<button class="item" data-a="dup">${I.dup}Duplicar canal (com as configurações)</button>` : ''}
+    ${man && cats.length ? `<div class="vol-h">Mover para categoria</div>
+      ${[{ id: '', name: 'Sem categoria' }, ...cats].map(k => `<button class="item" data-cat="${esc(k.id)}">${I.folder}${esc(k.name)}${(c.cat || '') === k.id ? '<span class="sub">✓</span>' : ''}</button>`).join('')}` : ''}
+    ${man ? `<div class="sep"></div><button class="item danger" data-a="del">${I.trash}Excluir canal</button>` : ''}`;
   ctx.onclick = async e => {
     const mv = e.target.closest('[data-cat]'), it = e.target.closest('[data-a]');
     closeCtx();
-    if (mv) { const r = await emit('channel:move', { groupId: g.id, channelId: cid, cat: mv.dataset.cat || null }); if (r.error) toast(r.error); return; }
+    if (mv) { moveChannelTo(g, cid, mv.dataset.cat || null); return; }
     if (!it) return;
-    if (it.dataset.a === 'open') openTextChannel(cid);
-    if (it.dataset.a === 'join') joinCall(cid);
-    if (it.dataset.a === 'del') deleteChannelModal(cid);
+    const a = it.dataset.a;
+    if (a === 'open') openTextChannel(cid);
+    if (a === 'join') joinCall(cid);
+    if (a === 'edit') openChannelSettings(cid);
+    if (a === 'perms') openChannelSettings(cid, 'perms');
+    if (a === 'invite') inviteModal(g);
+    if (a === 'id') navigator.clipboard?.writeText(cid).then(() => toast('ID do canal copiado.')).catch(() => toast(cid, 8000));
+    if (a === 'new') channelModal(g, c.type, c.cat || '');
+    if (a === 'dup') { const r = await emit('channel:clone', { channelId: cid }); if (r.error) toast(r.error); else toast(`Canal duplicado: ${r.channel.name}`); }
+    if (a === 'del') deleteChannelModal(cid);
   };
   placeCtx(x, y);
 }
@@ -907,8 +949,8 @@ function openChannelMenu(cid, x, y) {
     if (e.target.closest('.icon-btn')) return;
     const g = curGroup(); if (!g) return;
     const ch = e.target.closest('.ch[data-ch]'), vu = e.target.closest('.vuser[data-sid]');
-    if (ch && !can(g, 'manageChannels')) return;
-    if (vu && !can(g, 'moveMembers')) return;
+    if (ch && !canCh(findChannel(ch.dataset.ch)?.c, 'manageChannels')) return;
+    if (vu && !can(g, 'moveMembers') && !g.channels.some(c => c.type === 'voice' && canCh(c, 'moveMembers'))) return;
     if (!ch && !vu) return;
     st = { el: ch || vu, kind: ch ? 'ch' : 'user', x: e.clientX, y: e.clientY, on: false };
   });
@@ -943,8 +985,7 @@ function openChannelMenu(cid, x, y) {
       let cat = null, before = null;
       if (t.classList.contains('sec')) cat = t.dataset.cat || null;
       else { before = t.dataset.ch; cat = findChannel(before)?.c.cat || null; }
-      const r = await emit('channel:move', { groupId: g.id, channelId: id, cat, before });
-      if (r.error) toast(r.error);
+      await moveChannelTo(g, id, cat, before);
     } else {
       const r = await emit('voice:force', { sid: el.dataset.sid, action: 'move', to: t.dataset.vid });
       if (r.error) toast(r.error);
@@ -1013,6 +1054,7 @@ function renderHeaderMain() {
     t.innerHTML = u ? `<span class="dm-head">${ringing ? I.phone : avatar(u, 'sm')}<span>${esc(u.name)}</span></span>` : '<span>Mensagens diretas</span>';
     $('#msg-input').disabled = !S.cid;
     $('#msg-input').placeholder = u ? `Conversar com ${u.name}` : 'Mensagem';
+    $('#msg-input').maxLength = 2000; $('#att-btn').classList.remove('hidden'); renderSlow();
     if (u) {
       const inCall = call.channelId === dmChannelId(u.id);
       const mk = (title, html, fn, cls = '') => {
@@ -1033,10 +1075,8 @@ function renderHeaderMain() {
   }
   if (S.view === 'chat' && S.cid) {
     const f = findChannel(S.cid);
-    t.innerHTML = `${I.hash}<span>${esc(f?.c.name || '')}</span>`;
-    const canSend = can(f?.g, 'sendMessages');
-    $('#msg-input').disabled = !canSend;
-    $('#msg-input').placeholder = canSend ? `Conversar em #${f?.c.name || ''}` : 'Você não tem permissão para enviar mensagens neste grupo.';
+    t.innerHTML = `${I.hash}<span>${esc(f?.c.name || '')}</span>${f?.c.priv ? `<span class="ch-ic">${I.lockI}</span>` : ''}${f?.c.topic ? `<span class="topic" title="${esc(f.c.topic)}">${esc(f.c.topic)}</span>` : ''}`;
+    applyComposerRules(f?.c);
     if (call.channelId) {
       const b = document.createElement('button');
       b.className = 'btn primary'; b.style.padding = '6px 12px';
@@ -1153,7 +1193,9 @@ function msgHtml(m, grouped) {
     `<button class="react ${ids.includes(S.user?.id) ? 'mine' : ''}" data-react="${esc(e)}">${emojiHtml(e)} <b>${ids.length}</b></button>`).join('')}</div>` : '';
   const body = (m.text ? `<div class="msg-text">${richText(m.text)}${m.edited ? ' <span class="edited">(editado)</span>' : ''}</div>` : '') + attHtml(m.att);
   const text = body + reacts;
-  const tools = `<div class="msg-tools"><button data-t="react" title="Reagir">${I.smile}</button><button data-t="reply" title="Responder">${I.reply}</button><button data-t="more" title="Mais">${I.more}</button></div>`;
+  const fcR = !isDmChannel(S.cid) && findChannel(S.cid)?.c;
+  const tReact = !fcR || canCh(fcR, 'addReactions'), tReply = !fcR || (canCh(fcR, 'sendMessages') && (chCfg(fcR).replies !== false || canCh(fcR, 'manageMessages')));
+  const tools = `<div class="msg-tools">${tReact ? `<button data-t="react" title="Reagir">${I.smile}</button>` : ''}${tReply ? `<button data-t="reply" title="Responder">${I.reply}</button>` : ''}<button data-t="more" title="Mais">${I.more}</button></div>`;
   const mc = typeof mentionsMe === 'function' && mentionsMe(m) ? ' mentioned' : '';
   if (!grouped) return `<div class="msg first${mc}" data-id="${esc(m.id)}">${avatar(m)}<div class="msg-body">${reply}<div class="msg-head">
     <span class="msg-author" style="color:${esc(nameColor(m.userId, m.color))}">${esc(nameOf(m.userId, m.username))}</span><span class="msg-time">${fmtDate(m.ts)}</span></div>${text}</div>${tools}</div>`;
@@ -1201,14 +1243,25 @@ function placeCtx(x, y) {
 }
 const react = (m, emoji) => emit('message:react', { channelId: S.cid, id: m.id, emoji }).then(r => r.error && toast(r.error));
 
+// O que dá para fazer com uma mensagem neste canal
+function msgRules(m) {
+  const c = !isDmChannel(S.cid) && findChannel(S.cid)?.c;
+  const mine = m.userId === S.user?.id, mod = c ? canCh(c, 'manageMessages') : false, cfg = chCfg(c);
+  return {
+    react: !c || canCh(c, 'addReactions'),
+    reply: !c || (canCh(c, 'sendMessages') && (cfg.replies !== false || mod)),
+    edit: mine && (!c || ((cfg.edit !== false || mod) && canCh(c, 'sendMessages'))),
+    del: c ? (mine ? (cfg.del !== false || mod) : mod) : mine,
+  };
+}
 function openMsgMenu(m, x, y) {
-  const mine = m.userId === S.user?.id;
-  const canDel = mine || can(curGroup(), 'manageMessages');
-  ctx.innerHTML = `<div class="quick">${QUICK.map(e => `<button data-e="${e}">${e}</button>`).join('')}</div>
+  const R = msgRules(m);
+  const canDel = R.del;
+  ctx.innerHTML = `${R.react ? `<div class="quick">${QUICK.map(e => `<button data-e="${e}">${e}</button>`).join('')}</div>
     <button class="item" data-a="react">${I.smile}Adicionar reação</button>
-    <div class="sep"></div>
-    ${mine ? `<button class="item" data-a="edit">${I.edit}Editar mensagem</button>` : ''}
-    <button class="item" data-a="reply">${I.reply}Responder</button>
+    <div class="sep"></div>` : ''}
+    ${R.edit ? `<button class="item" data-a="edit">${I.edit}Editar mensagem</button>` : ''}
+    ${R.reply ? `<button class="item" data-a="reply">${I.reply}Responder</button>` : ''}
     <button class="item" data-a="copy">${I.copy}Copiar texto</button>
     ${canDel ? `<div class="sep"></div><button class="item danger" data-a="del">${I.trash}Excluir mensagem</button>` : ''}`;
   ctx.onclick = e => {
@@ -1424,10 +1477,41 @@ input.addEventListener('paste', e => {
   });
 })();
 
+// Regras do canal na caixa de mensagem (o servidor confere de novo)
+function applyComposerRules(c) {
+  const inp = $('#msg-input');
+  const send = canCh(c, 'sendMessages'), cfg = chCfg(c);
+  inp.disabled = !send;
+  inp.placeholder = !send ? (c?.p?.view ? 'Este canal é somente leitura para você.' : 'Você não tem permissão para enviar mensagens aqui.') : `Conversar em #${c?.name || ''}`;
+  inp.maxLength = cfg.maxLen || 2000;
+  $('#att-btn').classList.toggle('hidden', !canCh(c, 'attachFiles'));
+  renderSlow();
+}
+const slowUntil = {};
+function renderSlow() {
+  const f = S.cid && !isDmChannel(S.cid) && findChannel(S.cid);
+  let el = $('#slow-ind');
+  const slow = f && chCfg(f.c).slow && !canCh(f.c, 'manageMessages') && !canCh(f.c, 'manageChannels') ? chCfg(f.c).slow : 0;
+  if (!slow) { el?.remove(); return; }
+  if (!el) { el = document.createElement('div'); el.id = 'slow-ind'; el.className = 'slow-ind'; $('#composer').before(el); }
+  const left = Math.ceil(((slowUntil[S.cid] || 0) - Date.now()) / 1000);
+  el.innerHTML = `${I.clock}${left > 0 ? `Espere ${left} s para mandar outra mensagem` : `Modo lento: uma mensagem a cada ${fmtSecs(slow)}`}`;
+  el.classList.toggle('wait', left > 0);
+  if (left > 0) setTimeout(renderSlow, 500);
+}
+const fmtSecs = n => n < 60 ? `${n} s` : n < 3600 ? `${n / 60} min` : `${n / 3600} h`;
+
 async function sendMessage() {
   lastTypingSent = 0;
   const text = input.value.trim();
   if (!S.cid) return;
+  const fc = !isDmChannel(S.cid) && findChannel(S.cid)?.c;
+  if (fc && !S.editing) {
+    // avisa antes de mandar (o servidor também bloqueia)
+    if (!canCh(fc, 'embedLinks') && /(https?:\/\/|www\.)\S+/i.test(text)) return toast('Não é permitido enviar links neste canal.');
+    const left = Math.ceil(((slowUntil[S.cid] || 0) - Date.now()) / 1000);
+    if (left > 0) return toast(`Modo lento: espere ${left} s.`);
+  }
   if (S.atts.some(a => a.up)) return toast('Espere o arquivo terminar de enviar.');
   if (!text && !S.atts.length) return;
   const editing = S.editing, replyTo = S.replyTo, atts = S.atts.filter(a => a.att);
@@ -1444,6 +1528,12 @@ async function sendMessage() {
     }
     atts.forEach(a => a.preview && URL.revokeObjectURL(a.preview));
   } else r = await emit('message:send', { channelId: S.cid, text, replyTo: replyTo?.id });
+  if (fc && !editing) {
+    const slow = chCfg(fc).slow && !canCh(fc, 'manageMessages') && !canCh(fc, 'manageChannels') ? chCfg(fc).slow : 0;
+    if (r.slow) slowUntil[S.cid] = Date.now() + r.slow * 1000;
+    else if (slow && !r.error) slowUntil[S.cid] = Date.now() + slow * 1000;
+    renderSlow();
+  }
   if (r.error) {
     toast(r.error);
     if (!input.value && !atts.length) { input.value = text; autosize(); S.editing = editing; S.replyTo = replyTo; renderComposeBar(); }
@@ -1474,9 +1564,10 @@ document.addEventListener('keydown', e => {
   if (S.editing || S.replyTo) clearCompose();
 });
 
-function confirmModal(title, text, okLabel, onOk) {
+function confirmModal(title, text, okLabel, onOk, cancelLabel) {
+  const danger = /excluir|apagar|sair|remover|banir|expulsar/i.test(okLabel);
   modal(`<h3>${esc(title)}</h3><p class="muted" style="margin:0">${esc(text)}</p>
-    <div class="acts"><button class="btn" data-close>Cancelar</button><button class="btn danger" id="m-ok">${esc(okLabel)}</button></div>`,
+    <div class="acts"><button class="btn" data-close>${esc(cancelLabel || 'Cancelar')}</button><button class="btn ${danger ? 'danger' : 'primary'}" id="m-ok">${esc(okLabel)}</button></div>`,
     card => card.querySelector('#m-ok').onclick = () => { closeModal(); onOk(); });
 }
 
@@ -1538,28 +1629,6 @@ function inviteModal(g) {
     };
     const sh = card.querySelector('#m-share');
     if (sh) sh.onclick = () => navigator.share({ title: 'Nexo', text: `Entre no grupo ${g.name} no Nexo`, url: link }).catch(() => {});
-  });
-}
-
-function channelModal(g, type, cat = '') {
-  modal(`<h3>Criar ${type === 'voice' ? 'sala de voz' : 'canal de texto'}</h3>
-    <form id="m-ch" style="display:flex;flex-direction:column;gap:12px">
-      <div class="choice">
-        <label><input type="radio" name="t" value="text" ${type === 'text' ? 'checked' : ''}> ${I.hash} Texto</label>
-        <label><input type="radio" name="t" value="voice" ${type === 'voice' ? 'checked' : ''}> ${I.speaker} Voz/vídeo</label>
-      </div>
-      <label>Nome<input id="m-cname" maxlength="32" placeholder="${type === 'voice' ? 'Ex.: Jogando' : 'Ex.: memes'}" required></label>
-      ${g.categories?.length ? `<label>Categoria<select id="m-cat"><option value="">Sem categoria</option>${g.categories.map(c => `<option value="${c.id}" ${c.id === cat ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>` : ''}
-      <div class="acts"><button type="button" class="btn" data-close>Cancelar</button><button class="btn primary">Criar</button></div>
-    </form>`, card => {
-    card.querySelector('#m-ch').onsubmit = async e => {
-      e.preventDefault();
-      const t = card.querySelector('input[name=t]:checked').value;
-      const r = await emit('channel:create', { groupId: g.id, name: card.querySelector('#m-cname').value, type: t, cat: card.querySelector('#m-cat')?.value || '' });
-      if (r.error) return toast(r.error);
-      closeModal();
-      if (t === 'text') setTimeout(() => openTextChannel(r.channel.id), 50);
-    };
   });
 }
 
@@ -1657,6 +1726,9 @@ async function joinCall(cid) {
   call.mySid = r.sid;
   call.fmute = false;
   call.pinned = null;
+  call.vperms = r.perms || { speak: true, video: true, stream: true, useVAD: true };
+  call.vcfg = r.cfg || null;
+  if (r.perms) applyVoicePerms(r.perms, r.cfg, true);
   $('#tiles').innerHTML = '';
   renderLocalTiles();
   sendState();
@@ -1683,6 +1755,9 @@ async function rejoinCall() {
   const r = await emit('voice:join', { channelId: cid, dev: deviceName() });
   if (r.error) { toast('Não consegui voltar para a chamada: ' + r.error); leaveCall(); return; }
   call.mySid = r.sid;
+  call.vperms = r.perms || { speak: true, video: true, stream: true, useVAD: true };
+  call.vcfg = r.cfg || null;
+  applyPtt();
   sendState();
   renderTiles(); renderCallbar(); renderChannels();
   for (const p of r.peers) startAsCaller(addPeer(p));
@@ -2038,6 +2113,10 @@ function tunePeerSenders(peer) {
   const txs = peer.pc.getTransceivers();
   const q = curQ();
   tuneSender(txs[1]?.sender, 1_500_000, 30, 'balanced');
+  // qualidade do áudio escolhida para a sala
+  const abr = (call.vcfg?.bitrate || 64) * 1000;
+  const as = txs[0]?.sender;
+  if (as) { try { const ps = as.getParameters(); if (ps.encodings?.length) { ps.encodings[0].maxBitrate = abr; as.setParameters(ps).catch(() => {}); } } catch {} }
   // Se esse espectador pediu uma resolução menor, só a conexão com ele é reduzida
   const srcH = call.screenTrack?.getSettings?.().height || q.h;
   const scale = peer.wantH && srcH > peer.wantH ? Math.min(8, srcH / peer.wantH) : 1;
@@ -2080,6 +2159,7 @@ function setRecvQuality(h, uid) {
 // ---------- Controles ----------
 async function toggleMic() {
   if (!call.channelId) return;
+  if (call.vperms?.speak === false && !call.micOn) return toast('Você não tem permissão para falar nesta sala.');
   if (call.fmute && !call.micOn) return toast('Um moderador silenciou o seu microfone nesta sala.');
   if (call.fdeaf) return toast('Um moderador desativou o seu áudio nesta sala.');
   if (call.deaf && !call.micOn && !multiDevice()) { call.deaf = false; applyAllVolumes(); }   // 1 aparelho: ligar o mic religa o áudio
@@ -2107,7 +2187,7 @@ async function getCamera() {
 }
 
 async function toggleCam() {
-  if (!call.camTrack && !callIsDm() && !can(group(call.groupId), 'video')) return toast('Você não tem permissão para usar vídeo neste grupo.');
+  if (!call.camTrack && !callIsDm() && call.vperms?.video === false) return toast('Você não tem permissão para usar a câmera nesta sala.');
   if (call.camTrack) {
     call.camTrack.stop();
     call.camTrack = null;
@@ -2141,7 +2221,7 @@ async function flipCamera() {
 
 async function toggleScreen() {
   if (call.screenTrack) return stopScreen();
-  if (!callIsDm() && !can(group(call.groupId), 'video')) return toast('Você não tem permissão para transmitir a tela neste grupo.');
+  if (!callIsDm() && call.vperms?.stream === false) return toast('Você não tem permissão para transmitir a tela nesta sala.');
   if (NATIVE) return startNativeScreen();
   if (!canShareScreen()) {
     if (IS_ANDROID) apkModal('Para transmitir a tela do celular, instale o app Nexo para Android. O navegador não permite capturar a tela.');
@@ -2293,8 +2373,10 @@ function renderControls() {
   const c = $('#controls');
   const micOn = !!call.micTrack && call.micOn;
   const fm = call.fmute;
+  const noSpeak = call.vperms?.speak === false;
   const scrOk = canShareScreen();
   c.innerHTML = `
+    ${pttMode() ? `<button class="cbtn ptt" id="ptt-btn" title="Segure para falar (ou a tecla ${esc(keyLabel(prefs.pttKey))})">${I.mic}<span>Segure para falar</span></button>` : ''}
     <button class="cbtn ${micOn ? '' : 'off'}" data-k="mic" title="${fm && !micOn ? 'Silenciado por um moderador' : micOn ? 'Silenciar' : 'Ativar microfone'}">${micOn ? I.mic : I.micOff}</button>
     <button class="cbtn ${isDeaf() ? 'off' : ''}" data-k="deaf" title="${call.fdeaf ? 'Áudio desativado por um moderador' : call.deaf ? 'Ouvir de novo' : 'Desativar o áudio'}">${isDeaf() ? I.headOff : I.head}</button>
     <button class="cbtn ${call.camTrack ? 'on' : ''}" data-k="cam" title="${call.camTrack ? 'Desligar câmera' : 'Ligar câmera'}">${call.camTrack ? I.cam : I.camOff}</button>

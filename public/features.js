@@ -20,6 +20,8 @@ const PREFS_DEFAULT = {
   gate: 'auto',         // porta de ruído: off | auto | manual
   gateDb: -50,          // sensibilidade manual (dB)
   sfx: true, sfxVol: 80, // sons do app
+  inputMode: 'vad',     // vad | ptt (pressionar para falar)
+  pttKey: 'KeyV',
   compact: false,
   fontSize: 15,
 };
@@ -120,14 +122,17 @@ async function processMic(raw, onLevel) {
     gate.port.postMessage({ mode: prefs.gate, th: prefs.gateDb });
     if (onLevel) gate.port.onmessage = e => onLevel(e.data);
     const dst = ctx.createMediaStreamDestination();
-    src.connect(hp).connect(gate).connect(dst);
+    const pttGain = ctx.createGain();   // "pressionar para falar"
+    src.connect(hp).connect(gate).connect(pttGain).connect(dst);
     const track = dst.stream.getAudioTracks()[0];
     track._raw = raw;
     track._gate = gate;
-    track._nodes = [src, hp, gate];
+    track._nodes = [src, hp, gate, pttGain];
+    track._pttGain = pttGain;
+    setTimeout(() => { if (typeof applyPtt === 'function' && call.micTrack === track) applyPtt(); }, 0);
     // parar a faixa tratada também solta o microfone de verdade
     const stop = track.stop.bind(track);
-    track.stop = () => { stop(); try { raw.stop(); } catch {} try { src.disconnect(); hp.disconnect(); gate.disconnect(); } catch {} };
+    track.stop = () => { stop(); try { raw.stop(); } catch {} try { src.disconnect(); hp.disconnect(); gate.disconnect(); pttGain.disconnect(); } catch {} };
     return track;
   } catch (e) {
     console.warn('processamento do microfone indisponível', e);
