@@ -1,0 +1,19 @@
+cenário                   original        Desativado             Baixo             Médio              Alto        Automático
+                     PESQ / pausas     PESQ / pausas     PESQ / pausas     PESQ / pausas     PESQ / pausas     PESQ / pausas
+ventilador           2.46   -38dB       2.40   -61dB       3.13   -71dB       2.94   -97dB       2.89  -100dB       2.95   -98dB  
+teclado              1.22   -31dB       1.24   -35dB       1.25   -35dB       1.55   -48dB       2.34  -101dB       2.35  -101dB  
+mouse                1.83   -40dB       1.91   -40dB       1.92   -42dB       2.37   -53dB       2.65  -100dB       1.70   -42dB  
+computador           1.99   -42dB       1.90   -62dB       3.09   -78dB       2.80   -87dB       2.85  -100dB       2.80   -87dB  
+ar_condicionado      2.52   -40dB       2.53   -61dB       3.34   -77dB       3.07   -92dB       3.00  -100dB       3.07   -92dB  
+vento                2.80   -34dB       2.62   -40dB       3.19   -51dB       3.28   -89dB       3.10  -102dB       3.26   -93dB  
+ambiente             1.74   -42dB       1.68   -63dB       2.80   -77dB       2.59   -88dB       2.43   -97dB       2.59   -87dB  
+conversa_fundo       1.76   -36dB       1.75   -37dB       1.77   -39dB       1.67   -37dB       1.67   -37dB       1.71   -37dB  
+voz_baixa            1.30   -50dB       1.29   -64dB       2.14   -76dB       2.10   -97dB       2.20  -105dB       2.09   -97dB  
+voz_alta             3.24   -58dB       3.22   -76dB       3.80   -92dB       3.67   -93dB       3.50  -108dB       3.66   -93dB  
+silencio_limpo       4.64  -180dB       4.18  -180dB       4.18  -180dB       4.14  -180dB       3.39  -180dB       4.18  -180dB  
+
+Desativado  8 ruídos: PESQ 2.01  STOI 0.969  pausas -50 dB | voz baixa: +8.3 dB (STOI 0.94) | voz alta: -2.8 dB (STOI 0.91) | voz limpa PESQ 4.18
+Baixo       8 ruídos: PESQ 2.56  STOI 0.968  pausas -59 dB | voz baixa: +8.3 dB (STOI 0.93) | voz alta: -2.6 dB (STOI 0.99) | voz limpa PESQ 4.18
+Médio       8 ruídos: PESQ 2.53  STOI 0.965  pausas -74 dB | voz baixa: +2.5 dB (STOI 0.95) | voz alta: -2.7 dB (STOI 0.99) | voz limpa PESQ 4.14
+Alto        8 ruídos: PESQ 2.62  STOI 0.962  pausas -92 dB | voz baixa: +2.5 dB (STOI 0.94) | voz alta: -2.6 dB (STOI 0.98) | voz limpa PESQ 3.39
+Automático  8 ruídos: PESQ 2.55  STOI 0.945  pausas -80 dB | voz baixa: +2.5 dB (STOI 0.95) | voz alta: -2.7 dB (STOI 0.99) | voz limpa PESQ 4.18

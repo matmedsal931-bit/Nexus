@@ -33,7 +33,7 @@ const TEXT_PERMS = ['view', 'sendMessages', 'readHistory', 'attachFiles', 'embed
 const VOICE_PERMS = ['view', 'connect', 'speak', 'video', 'stream', 'useVAD', 'muteMembers', 'deafenMembers', 'moveMembers', 'disconnectMembers', 'manageChannels'];
 const ALL_CH_PERMS = [...new Set([...TEXT_PERMS, ...VOICE_PERMS])];
 const TEXT_DEF = { maxLen: 2000, slow: 0, edit: true, del: true, replies: true, maxFileMB: 25, newHistory: true, retention: 0 };
-const VOICE_DEF = { limit: 0, locked: false, temp: false, bitrate: 64 };
+const VOICE_DEF = { limit: 0, locked: false, temp: false, bitrate: 64, ns: '', screenAudio: true };
 const SLOW_OPTS = [0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600];
 const clone = o => JSON.parse(JSON.stringify(o ?? {}));
 
@@ -336,10 +336,12 @@ function tabBody(g, c, k) {
     ${np ? permNote : ''}`;
   if (CH.tab === 'audio') return `<h2>Áudio e vídeo</h2>
     ${selRow('cs-br', 'Qualidade do áudio', 'Mais qualidade usa mais internet de quem está na sala.', [[32, '32 kbps (economia)'], [64, '64 kbps (padrão)'], [96, '96 kbps (alta)'], [128, '128 kbps (máxima)']], d.cfg.bitrate)}
+    ${selRow('cs-nsrec', 'Supressão de ruído recomendada', 'Quem estiver com "usar a recomendação da sala" ligado passa a usar este nível aqui. Cada um pode desligar isso nas próprias configurações.', [['', 'Nenhuma (cada um usa a sua)'], ['off', 'Desativado'], ['low', 'Baixo'], ['med', 'Médio'], ['high', 'Alto'], ['auto', 'Automático']], d.cfg.ns || '')}
+    ${tgRow('cs-sa', 'Som na transmissão de tela', 'Desligado: quem transmitir a tela aqui envia só a imagem.', d.cfg.screenAudio !== false)}
     ${tgRow('cs-cam', 'Câmera', 'Permitir ligar a câmera nesta sala.', evOn(g, c, 'video'), np)}
     ${tgRow('cs-stream', 'Transmitir a tela', 'Permitir compartilhar a tela nesta sala.', evOn(g, c, 'stream'), np)}
     ${tgRow('cs-vad', 'Detecção de voz', 'Desligado: todo mundo precisa usar "pressionar para falar".', evOn(g, c, 'useVAD'), np)}
-    <p class="muted small note">A redução de ruído é escolhida por cada pessoa em Configurações → Voz e vídeo, porque depende do microfone de cada um.</p>
+    ${tgRow('cs-speak2', 'Usar o microfone', 'Desligado: as pessoas só ouvem.', evOn(g, c, 'speak'), np)}
     ${np ? permNote : ''}`;
   if (CH.tab === 'part') return `<h2>Participantes</h2>
     ${tgRow('cs-connect', 'Entrar na sala', 'Desligado: ninguém entra, só quem for liberado em Permissões.', evOn(g, c, 'connect'), np)}
@@ -372,7 +374,9 @@ function wireTab(g, c, k, body, canPerm) {
   const cfgB = (sel, key) => on(sel, 'change', el => { d.cfg[key] = el.checked; });
   const cfgN = (sel, key) => on(sel, 'change', el => { d.cfg[key] = Number(el.value); });
   cfgB('#cs-edit', 'edit'); cfgB('#cs-del', 'del'); cfgB('#cs-replies', 'replies'); cfgB('#cs-newhist', 'newHistory');
-  cfgB('#cs-locked', 'locked'); cfgB('#cs-temp', 'temp');
+  cfgB('#cs-locked', 'locked'); cfgB('#cs-temp', 'temp'); cfgB('#cs-sa', 'screenAudio');
+  on('#cs-nsrec', 'change', el => { d.cfg.ns = el.value; });
+  ev('#cs-speak2', 'speak');
   cfgN('#cs-maxlen', 'maxLen'); cfgN('#cs-slow', 'slow'); cfgN('#cs-maxmb', 'maxFileMB'); cfgN('#cs-ret', 'retention');
   cfgN('#cs-limit', 'limit'); cfgN('#cs-br', 'bitrate');
   // interruptores que mexem no @everyone: redesenha para refletir pares (ex.: somente leitura ↔ enviar)
@@ -540,6 +544,7 @@ function applyVoicePerms(perms, cfg, joining) {
   if (!call.vperms.useVAD && !joining && prefs.inputMode !== 'ptt') toast(`Esta sala usa "pressionar para falar": segure ${keyLabel(prefs.pttKey)} para falar.`, 6000);
   if (!call.vperms.useVAD && joining) toast(`Nesta sala é preciso segurar ${keyLabel(prefs.pttKey)} para falar.`, 6000);
   applyPtt();
+  if (typeof maybeApplyRoomNs === 'function') maybeApplyRoomNs();
   call.peers.forEach(tunePeerSenders);
   sendState?.(); renderControls(); renderCallbar?.(); renderLocalTiles?.();
 }

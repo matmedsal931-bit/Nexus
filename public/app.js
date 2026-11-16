@@ -44,6 +44,7 @@ const I = {
   users: P('<path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>'),
   download: P('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>'),
   x: P('<path d="M18 6 6 18M6 6l12 12"/>'),
+  wifiOff: P('<path d="M2 8.8a15 15 0 0 1 4.2-2.7M22 8.8A15 15 0 0 0 10.6 5M5 12.6a10 10 0 0 1 5-2.4M19 12.6a10 10 0 0 0-2-1.3M8.5 16.4a5 5 0 0 1 7 0M12 20h.01M2 2l20 20"/>'),
   check: P('<path d="m5 12 5 5L20 7"/>'),
   chev: P('<path d="m6 9 6 6 6-6"/>'),
   gear: P('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.8 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.8H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
@@ -2019,7 +2020,54 @@ function startAsCaller(peer) {
   };
   const local = localTracksFor(peer);
   ['audio', 'video', 'video', 'audio'].forEach((kind, i) => pc.addTransceiver(local[i] || kind, { direction: 'sendrecv' }));
+  preferRed(pc);
 }
+// Áudio com redundância (Opus RED): cada pacote leva uma cópia do anterior,
+// então a voz não corta quando a internet perde pacotes. Se o outro lado não aceitar, fica Opus normal.
+function preferRed(pc) {
+  try {
+    const caps = RTCRtpReceiver.getCapabilities?.('audio')?.codecs;
+    if (!caps) return;
+    const red = caps.filter(c => c.mimeType.toLowerCase() === 'audio/red');
+    if (!red.length) return;
+    const rest = caps.filter(c => c.mimeType.toLowerCase() !== 'audio/red');
+    const txs = pc.getTransceivers();
+    for (const i of [0, 3]) txs[i]?.setCodecPreferences?.([...red, ...rest]);
+  } catch (e) { console.warn('RED', e); }
+}
+
+// Qualidade da conexão com cada pessoa (a cada 4 s). Se a internet piorar,
+// o vídeo diminui para proteger a voz; quem está com conexão ruim ganha um aviso no quadro.
+async function checkNetwork() {
+  if (!call.channelId) return;
+  for (const peer of call.peers.values()) {
+    let st; try { st = await peer.pc.getStats(); } catch { continue; }
+    const n = peer.net ||= { lost: 0, recv: 0, vScale: 1 };
+    let lossOut = 0, rtt = 0, lossIn = 0, jitter = 0;
+    st.forEach(r => {
+      if (r.type === 'remote-inbound-rtp' && r.kind === 'audio') { lossOut = Math.max(lossOut, r.fractionLost || 0); rtt = Math.max(rtt, r.roundTripTime || 0); }
+      if (r.type === 'inbound-rtp' && r.kind === 'audio' && r.packetsReceived) {
+        const dl = (r.packetsLost || 0) - n.lost, dr = r.packetsReceived - n.recv;
+        if (dr > 0) lossIn = Math.max(0, dl) / (dr + Math.max(0, dl));
+        n.lost = r.packetsLost || 0; n.recv = r.packetsReceived;
+        jitter = r.jitter || 0;
+      }
+    });
+    const badOut = lossOut > 0.05 || rtt > 0.45;
+    const old = n.vScale;
+    n.vScale = badOut ? Math.max(0.25, n.vScale * 0.6) : Math.min(1, n.vScale * 1.25);
+    if (Math.abs(old - n.vScale) > 0.01) tunePeerSenders(peer);
+    Object.assign(n, { lossOut, lossIn, rtt, jitter, bad: lossIn > 0.05 || jitter > 0.06 || badOut });
+    const t = document.getElementById('t-cam-' + peer.sid);
+    if (t) {
+      let b = t.querySelector('.net-bad');
+      if (n.bad && !b) { b = document.createElement('span'); b.className = 'net-bad'; b.innerHTML = I.wifiOff || '!'; t.appendChild(b); }
+      if (!n.bad && b) b.remove();
+      if (b) b.title = `Conexão instável com ${nameOf(peer.userId, peer.username)}: ${Math.round(Math.max(lossIn, lossOut) * 100)}% de pacotes perdidos, atraso ${Math.round(rtt * 1000)} ms. A voz tem redundância para não cortar; o vídeo foi reduzido.`;
+    }
+  }
+}
+setInterval(checkNetwork, 4000);
 
 function onSignal(from, data) {
   if (!call.channelId || !data) return;
@@ -2039,6 +2087,7 @@ function onSignal(from, data) {
           txs[i].direction = 'sendrecv';
           if (txs[i].sender.track !== (local[i] || null) && (local[i] || i >= 2)) await txs[i].sender.replaceTrack(local[i] || null);
         }
+        preferRed(pc);
         await pc.setLocalDescription(await pc.createAnswer());
         S.socket.emit('signal', { to: from, data: { sdp: pc.localDescription } });
       } else if (pc.signalingState === 'have-local-offer') {
@@ -2112,7 +2161,8 @@ async function tuneSender(sender, maxBitrate, maxFramerate, pref, scale = 1) {
 function tunePeerSenders(peer) {
   const txs = peer.pc.getTransceivers();
   const q = curQ();
-  tuneSender(txs[1]?.sender, 1_500_000, 30, 'balanced');
+  const vs = peer.net?.vScale || 1;   // internet ruim: menos vídeo, para a voz não cortar
+  tuneSender(txs[1]?.sender, Math.round(1_500_000 * vs), 30, 'balanced');
   // qualidade do áudio escolhida para a sala
   const abr = (call.vcfg?.bitrate || 64) * 1000;
   const as = txs[0]?.sender;
@@ -2120,7 +2170,7 @@ function tunePeerSenders(peer) {
   // Se esse espectador pediu uma resolução menor, só a conexão com ele é reduzida
   const srcH = call.screenTrack?.getSettings?.().height || q.h;
   const scale = peer.wantH && srcH > peer.wantH ? Math.min(8, srcH / peer.wantH) : 1;
-  const br = Math.max(300_000, Math.round(q.br / (scale * scale)));
+  const br = Math.max(250_000, Math.round(q.br / (scale * scale) * vs));
   tuneSender(txs[2]?.sender, br, q.fps, q.fps >= 60 ? 'maintain-framerate' : 'maintain-resolution', scale);
 }
 
@@ -2251,6 +2301,10 @@ async function toggleScreen() {
   vt.onended = () => stopScreen();
   call.screenTrack = vt;
   call.screenAudioTrack = s.getAudioTracks()[0] || null;
+  if (call.screenAudioTrack && call.vcfg?.screenAudio === false) {   // a sala não permite som na transmissão
+    call.screenAudioTrack.stop(); call.screenAudioTrack = null;
+    toast('Esta sala não permite som na transmissão de tela: só a imagem vai.', 5000);
+  }
   call.screenAudioInfo = describeScreenAudio(vt, call.screenAudioTrack);
   // Tela inteira sem como tirar as vozes da chamada: começa sem som, para não dar eco na live
   if (call.screenAudioInfo.risky && call.screenAudioTrack) call.screenAudioTrack.enabled = false;
@@ -2673,7 +2727,8 @@ function goFullscreen(tile) {
 // ---------- Audio: indicador de fala, desbloqueio, sons ----------
 function ensureAudioCtx() {
   try {
-    if (!call.audioCtx) call.audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    // 48 kHz: é a taxa que os supressores de ruído com IA esperam (o navegador converte se o aparelho for diferente)
+    if (!call.audioCtx) { const AC = window.AudioContext || window.webkitAudioContext; try { call.audioCtx = new AC({ sampleRate: 48000, latencyHint: 'interactive' }); } catch { call.audioCtx = new AC(); } }
     if (call.audioCtx.state === 'suspended') call.audioCtx.resume();
   } catch {}
 }

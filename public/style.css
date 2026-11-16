@@ -1020,3 +1020,29 @@ div.perm { display: flex; }
   .cbtn.ptt { flex: 1 1 100%; width: 100%; height: 50px; justify-content: center; order: -1; font-size: 15px; }
   div.perm { flex-wrap: wrap; }
 }
+
+/* =================== Áudio e Voz =================== */
+.aud-sec { border-top: 1px solid var(--line); padding-top: 16px; display: flex; flex-direction: column; gap: 10px; }
+.aud-sec h3 { margin: 0; font-family: var(--font-d); font-size: 16px; }
+.aud-sec .perm { padding: 9px 0; }
+.live-row, .rec-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.live-row .btn, .rec-row .btn { display: inline-flex; align-items: center; gap: 8px; }
+.live-row .btn svg, .rec-row .btn svg, .ab-h .btn svg, #av-beep svg { width: 16px; height: 16px; }
+.meter.big { flex: 1; min-width: 200px; height: 14px; }
+.meter.big i { display: block; height: 100%; border-radius: inherit; background: var(--acc); transition: width .06s linear; }
+#av-live .ok { color: var(--green); }
+.ns-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+.ns-card { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg1); color: var(--txt); cursor: pointer; font: inherit; }
+.ns-card span { color: var(--mut); font-size: 12.5px; line-height: 1.35; }
+.ns-card:hover { border-color: var(--bg4); }
+.ns-card.on { border-color: var(--acc); background: color-mix(in srgb, var(--acc) 14%, var(--bg1)); }
+.ab { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 10px; }
+.ab-col { background: var(--bg1); border: 1px solid var(--line); border-radius: 12px; padding: 10px; }
+.ab-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.ab canvas { width: 100%; height: 70px; display: block; }
+@media (max-width: 760px) { .ab { grid-template-columns: 1fr; } }
+.tile .net-bad { position: absolute; right: 8px; top: 8px; width: 26px; height: 26px; border-radius: 8px; background: rgba(242, 84, 103, .9); color: #fff; display: grid; place-items: center; z-index: 2; }
+.tile .net-bad svg { width: 15px; height: 15px; }
+
+.seg button:disabled { opacity: .4; cursor: not-allowed; }
+#av-beep { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; }

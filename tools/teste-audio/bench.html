@@ -1,0 +1,41 @@
+<!doctype html><meta charset="utf-8"><title>bench</title>
+<script>
+// Processa um arquivo por um método de supressão, offline, e mede o tempo
+const V = '/nexo/public/vendor/ns/';
+const wasm = {};
+async function loadBin(name) { return wasm[name] ||= await (await fetch(V + name)).arrayBuffer(); }
+async function decode(url) {
+  const ab = await (await fetch(url)).arrayBuffer();
+  const ctx = new OfflineAudioContext(1, 48000, 48000);
+  return (await ctx.decodeAudioData(ab)).getChannelData(0);
+}
+window.run = async (file, method) => {
+  const x = await decode('/audiotest/wav/' + file + '.wav');
+  const ctx = new OfflineAudioContext(1, x.length, 48000);
+  const buf = ctx.createBuffer(1, x.length, 48000); buf.copyToChannel(x, 0);
+  const src = ctx.createBufferSource(); src.buffer = buf;
+  let node = null;
+  if (method === 'rnnoise') {
+    await ctx.audioWorklet.addModule(V + 'rnnoise/workletProcessor.js');
+    node = new AudioWorkletNode(ctx, '@sapphi-red/web-noise-suppressor/rnnoise', { processorOptions: { maxChannels: 1, wasmBinary: (await loadBin('rnnoise_simd.wasm')).slice(0) } });
+  } else if (method === 'gtcrn') {
+    await ctx.audioWorklet.addModule(V + 'gtcrn/workletProcessor.js');
+    node = new AudioWorkletNode(ctx, '@sapphi-red/web-noise-suppressor/gtcrn', { processorOptions: { maxChannels: 1, sampleRate: 48000, wasmBinary: (await loadBin('gtcrn.wasm')).slice(0) } });
+  } else if (method === 'speex') {
+    await ctx.audioWorklet.addModule(V + 'speex/workletProcessor.js');
+    node = new AudioWorkletNode(ctx, '@sapphi-red/web-noise-suppressor/speex', { processorOptions: { maxChannels: 1, wasmBinary: (await loadBin('speex.wasm')).slice(0) } });
+  }
+  if (node) src.connect(node).connect(ctx.destination); else src.connect(ctx.destination);
+  src.start();
+  await new Promise(r => setTimeout(r, 300));   // dá tempo do wasm carregar no worklet
+  const t0 = performance.now();
+  const out = await ctx.startRendering();
+  const ms = performance.now() - t0;
+  const y = out.getChannelData(0);
+  const i16 = new Int16Array(y.length);
+  for (let i = 0; i < y.length; i++) i16[i] = Math.max(-32768, Math.min(32767, Math.round(y[i] * 32767)));
+  let s = ''; const u8 = new Uint8Array(i16.buffer);
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return { ms, secs: x.length / 48000, b64: btoa(s) };
+};
+</script>

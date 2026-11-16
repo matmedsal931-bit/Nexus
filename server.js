@@ -234,7 +234,7 @@ const CH_PERMS = ['view', 'manageChannels', 'sendMessages', 'readHistory', 'atta
   'manageMessages', 'connect', 'speak', 'video', 'stream', 'useVAD', 'muteMembers', 'deafenMembers', 'moveMembers', 'disconnectMembers'];
 // Configurações de cada canal (com os limites aceitos)
 const TEXT_CFG = { maxLen: 2000, slow: 0, edit: true, del: true, replies: true, maxFileMB: 25, newHistory: true, retention: 0 };
-const VOICE_CFG = { limit: 0, locked: false, temp: false, bitrate: 64 };
+const VOICE_CFG = { limit: 0, locked: false, temp: false, bitrate: 64, ns: '', screenAudio: true };
 function cleanCfg(type, cur, inc) {
   const base = type === 'voice' ? VOICE_CFG : TEXT_CFG;
   const out = { ...base, ...(cur || {}) };
@@ -245,6 +245,8 @@ function cleanCfg(type, cur, inc) {
     if ('locked' in inc) out.locked = !!inc.locked;
     if ('temp' in inc) out.temp = !!inc.temp;
     if ('bitrate' in inc) out.bitrate = [32, 64, 96, 128].includes(Number(inc.bitrate)) ? Number(inc.bitrate) : 64;
+    if ('ns' in inc) out.ns = ['', 'off', 'low', 'med', 'high', 'auto'].includes(inc.ns) ? inc.ns : '';
+    if ('screenAudio' in inc) out.screenAudio = !!inc.screenAudio;
   } else {
     if ('maxLen' in inc) out.maxLen = num(inc.maxLen, 1, 2000, 2000);
     if ('slow' in inc) out.slow = [0, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 21600].includes(Number(inc.slow)) ? Number(inc.slow) : 0;

@@ -7,23 +7,12 @@
 
 const ACC_TABS = [
   ['conta', 'Minha conta'],
-  ['voz', 'Voz e vídeo'],
+  ['audio', 'Áudio e Voz'],
+  ['video', 'Vídeo'],
   ['notif', 'Notificações'],
   ['aparencia', 'Aparência'],
 ];
 const ACC = { tab: 'conta', test: null };
-function nsHelp() {
-  const iso = (() => { try { return !!navigator.mediaDevices.getSupportedConstraints().voiceIsolation; } catch { return false; } })();
-  return prefs.ns === 'off' ? 'Sem filtro: bom para tocar instrumento ou usar microfone profissional.'
-    : prefs.ns === 'strong' ? (iso ? 'Corta ventilador, teclado e barulho de fundo com o isolamento de voz do navegador, mais um filtro de graves.' : 'Filtro de graves mais forte. Seu navegador não tem o isolamento de voz; no Chrome/Edge atualizados ele fica ainda melhor.')
-    : 'Tira chiado e ruído leve, sem mudar o jeito da sua voz.';
-}
-function gateHelp() {
-  return prefs.gate === 'auto' ? 'O Nexo aprende o barulho do seu ambiente e só envia o som quando você fala. A marca na barra mostra o limite.'
-    : prefs.gate === 'manual' ? 'Arraste: o som só é enviado quando passa da marca (barra verde). Fale baixo e veja se ainda fica verde.'
-    : 'O microfone envia tudo o tempo todo, inclusive o barulho do ambiente.';
-}
-
 function openAccount(tab = 'conta') {
   closeCtx();
   closeDrawer();
@@ -48,7 +37,8 @@ function renderAccount() {
   });
   const body = $('#set-body');
   body.scrollTop = 0;
-  ({ conta: accConta, voz: accVoz, notif: accNotif, aparencia: accLook })[ACC.tab](body);
+  if (ACC.tab === 'voz') ACC.tab = 'audio';
+  ({ conta: accConta, audio: accAudio, video: accVideo, notif: accNotif, aparencia: accLook })[ACC.tab](body);
 }
 
 // ---------------------------------------------------------------------
@@ -122,65 +112,103 @@ function stopDeviceTest() {
   t.cam?.getTracks().forEach(x => x.stop());
   ACC.test = null;
 }
-async function accVoz(body) {
-  if (!hasMedia()) {
-    body.innerHTML = `<h2>Voz e vídeo</h2><p class="muted">Este navegador não permite usar microfone e câmera${location.protocol !== 'https:' ? ' (o site precisa abrir com https://)' : ''}.</p>`;
-    return;
-  }
-  const devs = await listDevices();
-  const named = devs.some(d => d.label);
-  const opts = (kind, cur) => {
-    const list = devs.filter(d => d.kind === kind);
-    return `<option value="">Padrão do sistema</option>` + list.map((d, i) =>
-      `<option value="${esc(d.deviceId)}" ${d.deviceId === cur ? 'selected' : ''}>${esc(d.label || `${kind === 'videoinput' ? 'Câmera' : kind === 'audioinput' ? 'Microfone' : 'Saída'} ${i + 1}`)}</option>`).join('');
-  };
-  body.innerHTML = `<h2>Voz e vídeo</h2>
-    ${named ? '' : `<div class="acc-note">Para mostrar o nome dos seus aparelhos, o navegador precisa de permissão.
-      <button class="btn primary sm" id="av-allow">Permitir acesso</button></div>`}
-    <div class="dev-grid">
-      <label>Microfone<select id="av-mic">${opts('audioinput', prefs.mic)}</select></label>
-      ${canPickOutput() ? `<label>Saída de som<select id="av-out">${opts('audiooutput', prefs.out)}</select></label>` : ''}
-      <label>Câmera<select id="av-cam">${opts('videoinput', prefs.cam)}</select></label>
-    </div>
-    <div class="set-block"><div class="pf-h">Modo de entrada</div>
-      <div class="seg" id="av-mode">${[['vad', 'Detecção de voz'], ['ptt', 'Pressionar para falar']].map(([k, v]) => `<button data-m="${k}" class="${(prefs.inputMode || 'vad') === k ? 'on' : ''}">${v}</button>`).join('')}</div>
-      <div class="row l ${prefs.inputMode === 'ptt' ? '' : 'hidden'}" id="av-pttrow" style="margin-top:10px;gap:10px;align-items:center">
-        <span>Tecla:</span><button class="btn sm" id="av-key">${esc(keyLabel(prefs.pttKey))}</button><span class="muted small">clique e aperte a tecla</span></div>
-      <p class="muted small">Pressionar para falar funciona com o Nexo aberto na frente (o navegador não recebe teclas de outros programas). No celular aparece o botão "Segure para falar". Algumas salas exigem esse modo.</p></div>
-    <div class="set-block"><div class="pf-h">Sensibilidade do microfone</div>
-      <div class="seg" id="av-gate">${[['auto', 'Automática'], ['manual', 'Manual'], ['off', 'Sempre transmitir']].map(([k, v]) => `<button data-g="${k}" class="${prefs.gate === k ? 'on' : ''}">${v}</button>`).join('')}</div>
-      <div class="mic-test"><button class="btn" id="av-test">Testar</button>
-        <div class="meter gate"><i id="av-bar"></i><b id="av-th" style="left:${(prefs.gateDb + 80) / 80 * 100}%"></b>
-          <input type="range" id="av-gdb" min="-80" max="-10" step="1" value="${prefs.gateDb}" ${prefs.gate === 'manual' ? '' : 'disabled'} aria-label="Sensibilidade"></div></div>
-      <p class="muted small" id="av-gtxt">${gateHelp()}</p></div>
-    <div class="set-block"><div class="pf-h">Testar câmera</div>
-      <div class="cam-test"><video id="av-video" autoplay playsinline muted></video><button class="btn" id="av-camtest">Ligar a câmera de teste</button></div></div>
-    <div class="set-block"><div class="pf-h">Supressão de ruído</div>
-      <div class="seg" id="av-ns">${[['off', 'Desligada'], ['std', 'Padrão'], ['strong', 'Forte']].map(([k, v]) => `<button data-ns="${k}" class="${prefs.ns === k ? 'on' : ''}">${v}</button>`).join('')}</div>
-      <p class="muted small" id="av-nstxt">${nsHelp()}</p></div>
-    <label class="perm"><div><b>Cancelamento de eco</b><p>Evita que o som que sai do seu alto-falante volte pelo microfone. Pode desligar se usar fone de ouvido.</p></div>
-      <input type="checkbox" class="tg" id="av-echo" ${prefs.echo ? 'checked' : ''}></label>
-    <label class="perm"><div><b>Ganho automático</b><p>Ajusta o volume da sua voz sozinho. Desligue se usar um microfone profissional com ganho próprio.</p></div>
-      <input type="checkbox" class="tg" id="av-agc" ${prefs.agc ? 'checked' : ''}></label>`;
-  const q = s => body.querySelector(s);
+// ---------------------------------------------------------------------
+// Áudio e Voz
+// ---------------------------------------------------------------------
+const devOpts = (devs, kind, cur) => {
+  const list = devs.filter(d => d.kind === kind);
+  return `<option value="">Padrão do sistema</option>` + list.map((d, i) =>
+    `<option value="${esc(d.deviceId)}" ${d.deviceId === cur ? 'selected' : ''}>${esc(d.label || `${kind === 'videoinput' ? 'Câmera' : kind === 'audioinput' ? 'Microfone' : 'Saída'} ${i + 1}`)}</option>`).join('');
+};
+const noMediaMsg = t => `<h2>${t}</h2><p class="muted">Este navegador não permite usar microfone e câmera${location.protocol !== 'https:' ? ' (o site precisa abrir com https://)' : ''}.</p>`;
+const allowBox = named => named ? '' : `<div class="acc-note">Para mostrar o nome dos seus aparelhos, o navegador precisa de permissão.
+  <button class="btn primary sm" id="av-allow">Permitir acesso</button></div>`;
+function wireAllow(q) {
   q('#av-allow')?.addEventListener('click', async () => {
     try { const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: true }); s.getTracks().forEach(t => t.stop()); }
     catch { try { const s = await navigator.mediaDevices.getUserMedia({ audio: true }); s.getTracks().forEach(t => t.stop()); } catch { return toast('O navegador não deu permissão.'); } }
     renderAccount();
   });
-  q('#av-mic').onchange = e => { setPref('mic', e.target.value); toast('Microfone salvo.'); switchMicDevice(); if (ACC.test?.stream) restartMicTest(); };
+}
+const KIND_LABEL = { none: 'sem supressão de IA', rnnoise: 'RNNoise (IA)', gtcrn: 'GTCRN (IA forte)' };
+const gateHelp2 = () => prefs.gate === 'auto' ? 'O Nexo aprende o barulho do seu ambiente e só envia o som quando você fala. A marca amarela mostra o limite.'
+  : prefs.gate === 'manual' ? 'Arraste a marca: o som só é enviado quando a barra passa dela (fica verde). Fale baixo e veja se ainda fica verde.'
+  : 'O microfone envia tudo o tempo todo, inclusive o barulho do ambiente.';
+const pctOf = db => Math.max(0, Math.min(100, (db + 80) / 80 * 100));
+
+async function accAudio(body) {
+  if (!hasMedia()) { body.innerHTML = noMediaMsg('Áudio e Voz'); return; }
+  const devs = await listDevices();
+  const named = devs.some(d => d.label);
+  const room = call.channelId && call.vcfg?.ns;
+  const tg = (id, title, desc, on) => `<label class="perm"><div><b>${title}</b><p>${desc}</p></div><input type="checkbox" class="tg" id="${id}" ${on ? 'checked' : ''}></label>`;
+  body.innerHTML = `<h2>Áudio e Voz</h2>
+    ${allowBox(named)}
+    <section class="aud-sec"><h3>Dispositivo de entrada</h3>
+      <label class="fld">Microfone<select class="sel" id="av-mic">${devOpts(devs, 'audioinput', prefs.mic)}</select></label>
+      <div class="fld">Volume de entrada<div class="vol">${I.mic}<input type="range" min="0" max="200" step="5" value="${prefs.inVol ?? 100}" id="av-invol"><b id="av-involl">${prefs.inVol ?? 100}%</b></div></div>
+      <div class="live-row"><button class="btn" id="av-test">${I.mic}Testar microfone</button>
+        <div class="meter gate big"><i id="av-bar"></i><b id="av-th" style="left:${pctOf(prefs.gateDb)}%"></b>
+          <input type="range" id="av-gdb" min="-80" max="-10" step="1" value="${prefs.gateDb}" ${prefs.gate === 'manual' ? '' : 'disabled'} aria-label="Limite de ativação"></div></div>
+      <p class="muted small" id="av-live">Clique em "Testar microfone" e fale: a barra mostra o volume que sai depois do tratamento.</p>
+    </section>
+    <section class="aud-sec"><h3>Dispositivo de saída</h3>
+      ${canPickOutput() ? `<label class="fld">Alto-falante ou fone<select class="sel" id="av-out">${devOpts(devs, 'audiooutput', prefs.out)}</select></label>` : '<p class="muted small">Este navegador usa sempre a saída padrão do sistema.</p>'}
+      <button class="btn sm" id="av-beep">${I.vol}Tocar som de teste</button>
+    </section>
+    <section class="aud-sec"><h3>Supressão de ruído</h3>
+      <div class="ns-grid" id="av-ns">${NS_LEVELS.map(([k, l, d]) => `<button class="ns-card ${normNs(prefs.ns) === k ? 'on' : ''}" data-ns="${k}"><b>${l}</b><span>${d}</span></button>`).join('')}</div>
+      ${tg('av-room', 'Usar a recomendação da sala', 'Algumas salas pedem um nível específico. Só vale enquanto você estiver nelas.', prefs.followRoomNs !== false)}
+      ${room ? `<p class="muted small">A sala em que você está recomenda: <b>${NS_LABEL[room]}</b>.</p>` : ''}
+    </section>
+    <section class="aud-sec"><h3>Sensibilidade do microfone</h3>
+      <div class="pf-h">Modo de entrada</div>
+      <div class="seg" id="av-mode">${[['vad', 'Detecção de voz'], ['ptt', 'Pressionar para falar']].map(([k, v]) => `<button data-m="${k}" class="${(prefs.inputMode || 'vad') === k ? 'on' : ''}">${v}</button>`).join('')}</div>
+      <div class="row l ${prefs.inputMode === 'ptt' ? '' : 'hidden'}" id="av-pttrow" style="margin-top:10px;gap:10px;align-items:center">
+        <span>Tecla:</span><button class="btn sm" id="av-key">${esc(keyLabel(prefs.pttKey))}</button><span class="muted small">clique e aperte a tecla</span></div>
+      <p class="muted small">Pressionar para falar funciona com o Nexo aberto na frente (o navegador não recebe teclas de outros programas). No celular aparece o botão "Segure para falar".</p>
+      <div class="pf-h">Detecção de voz</div>
+      <div class="seg" id="av-gate">${[['auto', 'Automática'], ['manual', 'Limite manual'], ['off', 'Sempre transmitir']].map(([k, v]) => `<button data-g="${k}" class="${prefs.gate === k ? 'on' : ''}">${v}</button>`).join('')}</div>
+      <p class="muted small" id="av-gtxt">${gateHelp2()}</p>
+    </section>
+    <section class="aud-sec"><h3>Processamento de voz</h3>
+      ${tg('av-echo', 'Cancelamento de eco', 'Não deixa o som do seu alto-falante voltar pelo microfone. Com fone de ouvido, pode desligar.', prefs.echo !== false)}
+      ${tg('av-agc', 'Normalização de volume', 'Deixa sua voz sempre no mesmo volume, falando baixo ou alto (ajuste lento, sem "bombear").', prefs.agc !== false)}
+      ${tg('av-comp', 'Compressor', 'Segura gritos e risadas altas para não estourar no ouvido dos outros.', prefs.comp !== false)}
+      ${tg('av-hpf', 'Filtro de graves', 'Corta ronco grave: vento, batida na mesa, ar-condicionado.', prefs.hpf !== false)}
+      ${tg('av-click', 'Proteção contra cliques', 'Teclas e cliques de mouse sozinhos não abrem o seu microfone.', prefs.clickGuard !== false)}
+    </section>
+    <section class="aud-sec"><h3>Teste de gravação</h3>
+      <p class="muted small">Grave 5 segundos falando com o barulho de sempre (ventilador, teclado…). Depois compare o mesmo trecho original e com cada nível de supressão.</p>
+      <div class="rec-row"><button class="btn primary" id="ar-rec">${I.mic}Gravar 5 segundos</button><div class="meter big"><i id="ar-bar"></i></div><span class="muted small" id="ar-t"></span></div>
+      <div id="ar-out" class="hidden">
+        <div class="seg" id="ar-lvl">${NS_LEVELS.map(([k, l]) => `<button data-l="${k}" class="${normNs(prefs.ns) === k ? 'on' : ''}" ${k === 'low' ? 'disabled title="O Baixo usa o filtro do navegador, que só funciona ao vivo. Use Testar microfone para ouvir o efeito."' : ''}>${l}</button>`).join('')}</div>
+        <div class="ab">
+          <div class="ab-col"><div class="ab-h"><b>Original</b><button class="btn sm" id="ar-pa">${I.vol}Ouvir</button></div><canvas id="ar-wa" width="600" height="70"></canvas></div>
+          <div class="ab-col"><div class="ab-h"><b id="ar-lb">Com supressão</b><button class="btn sm primary" id="ar-pb">${I.vol}Ouvir</button></div><canvas id="ar-wb" width="600" height="70"></canvas></div>
+        </div>
+        <p class="muted small" id="ar-info"></p>
+      </div>
+    </section>`;
+  const q = s => body.querySelector(s);
+  wireAllow(q);
+  const reMic = () => { if (call.micTrack) switchMicDevice(true); if (ACC.test?.stream) restartMicTest(); };
+  q('#av-mic').onchange = e => { setPref('mic', e.target.value); toast('Microfone salvo.'); reMic(); };
+  q('#av-invol').oninput = e => { setPref('inVol', Number(e.target.value)); q('#av-involl').textContent = e.target.value + '%'; updateGate(); };
   q('#av-out')?.addEventListener('change', e => { setPref('out', e.target.value); applySinkAll(); toast('Saída de som salva.'); });
-  q('#av-cam').onchange = e => { setPref('cam', e.target.value); toast('Câmera salva.'); if (ACC.test?.cam) startCamTest(); };
-  const reMic = () => { if (call.micTrack) switchMicDevice(); if (ACC.test?.stream) restartMicTest(); };
+  q('#av-beep').onclick = () => playTestTone();
   q('#av-ns').onclick = e => {
     const b = e.target.closest('[data-ns]'); if (!b) return;
     setPref('ns', b.dataset.ns); setPref('nsSet', 1);
-    q('#av-ns').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
-    q('#av-nstxt').textContent = nsHelp();
+    q('#av-ns').querySelectorAll('.ns-card').forEach(x => x.classList.toggle('on', x === b));
     reMic();
+    if (ACC.clip) { setLvl(b.dataset.ns); }
   };
+  q('#av-room').onchange = e => { setPref('followRoomNs', e.target.checked); reMic(); };
+  const live = (id, key) => q(id).onchange = e => { setPref(key, e.target.checked); updateGate(); };
   q('#av-echo').onchange = e => { setPref('echo', e.target.checked); setPref('nsSet', 1); reMic(); };
-  q('#av-agc').onchange = e => { setPref('agc', e.target.checked); reMic(); };
+  q('#av-hpf').onchange = e => { setPref('hpf', e.target.checked); reMic(); };
+  live('#av-agc', 'agc'); live('#av-comp', 'comp'); live('#av-click', 'clickGuard');
   q('#av-mode').onclick = e => {
     const b = e.target.closest('[data-m]'); if (!b) return;
     setPref('inputMode', b.dataset.m);
@@ -204,40 +232,116 @@ async function accVoz(body) {
     setPref('gate', b.dataset.g);
     q('#av-gate').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
     q('#av-gdb').disabled = prefs.gate !== 'manual';
-    q('#av-gtxt').textContent = gateHelp();
+    q('#av-gtxt').textContent = gateHelp2();
     updateGate();
     if (!ACC.test?.stream) restartMicTest();
   };
-  q('#av-gdb').oninput = e => {
-    setPref('gateDb', Number(e.target.value));
-    q('#av-th').style.left = (prefs.gateDb + 80) / 80 * 100 + '%';
-    updateGate();
-  };
+  q('#av-gdb').oninput = e => { setPref('gateDb', Number(e.target.value)); q('#av-th').style.left = pctOf(prefs.gateDb) + '%'; updateGate(); };
 
+  // ---- teste ao vivo (o mesmo tratamento da chamada) ----
   const restartMicTest = async () => {
-    const keepCam = ACC.test?.cam;
-    if (ACC.test) { clearInterval(ACC.test.timer); ACC.test.stream?.getTracks().forEach(x => x.stop()); }
+    if (ACC.test?.stream) ACC.test.stream.getTracks().forEach(x => x.stop());
     try {
-      // o teste passa pelo mesmo tratamento da chamada: a barra fica verde quando a voz seria enviada
       const track = await acquireMic(d => {
-        const bar = document.getElementById('av-bar'), th = document.getElementById('av-th');
+        const bar = document.getElementById('av-bar'), th = document.getElementById('av-th'), txt = document.getElementById('av-live');
         if (!bar) return;
-        bar.style.width = Math.max(0, Math.min(100, (d.level + 80) / 80 * 100)) + '%';
+        bar.style.width = pctOf(d.level) + '%';
         bar.classList.toggle('open', !!d.open);
-        if (th && prefs.gate === 'auto') th.style.left = Math.max(0, Math.min(100, (d.th + 80) / 80 * 100)) + '%';
+        if (th && prefs.gate === 'auto') th.style.left = pctOf(d.th) + '%';
+        if (txt) txt.innerHTML = `${d.open ? '<b class="ok">Enviando sua voz</b>' : 'Microfone fechado (não está ouvindo voz)'} · ruído do ambiente: ${Math.round(d.rawFloor)} dB${d.imp >= 0.4 ? ` · cliques/teclas: ${d.imp.toFixed(1)} por segundo` : ''} · supressor agora: <b>${KIND_LABEL[d.kind] || '—'}</b>${normNs(effectiveNs()) === 'low' ? ' + filtro do navegador' : ''}`;
       });
-      const stream = new MediaStream([track]);
-      ACC.test = { ...(ACC.test || {}), stream, track, timer: null, cam: keepCam };
-      q('#av-test').textContent = 'Parar teste';
+      ACC.test = { ...(ACC.test || {}), stream: new MediaStream([track]), track };
+      q('#av-test').innerHTML = `${I.micOff}Parar teste`;
     } catch { toast('Não consegui usar o microfone.'); }
   };
   q('#av-test').onclick = () => {
     if (ACC.test?.stream) {
-      clearInterval(ACC.test.timer); ACC.test.stream.getTracks().forEach(x => x.stop());
-      ACC.test.stream = null; ACC.test.track = null; q('#av-test').textContent = 'Testar';
+      ACC.test.stream.getTracks().forEach(x => x.stop());
+      ACC.test.stream = null; ACC.test.track = null; q('#av-test').innerHTML = `${I.mic}Testar microfone`;
       const bar = document.getElementById('av-bar'); if (bar) bar.style.width = '0';
     } else restartMicTest();
   };
+
+  // ---- gravação para comparar ----
+  const draw = (cv, y) => {
+    const c = cv.getContext('2d'), W = cv.width, H = cv.height;
+    c.clearRect(0, 0, W, H);
+    c.fillStyle = getComputedStyle(document.body).getPropertyValue('--acc') || '#7b61ff';
+    const step = Math.max(1, Math.floor(y.length / W));
+    for (let x = 0; x < W; x++) {
+      let m = 0; for (let i = x * step; i < (x + 1) * step && i < y.length; i++) { const v = Math.abs(y[i]); if (v > m) m = v; }
+      const h = Math.max(1, Math.min(1, m * 1.4) * H);
+      c.fillRect(x, (H - h) / 2, 1, h);
+    }
+  };
+  let playing = null;
+  const play = y => {
+    try { playing?.stop(); } catch {}
+    ensureAudioCtx();
+    const ctx = call.audioCtx, b = ctx.createBuffer(1, y.length, ACC.clip.sr); b.copyToChannel(y, 0);
+    const s = ctx.createBufferSource(); s.buffer = b; s.connect(ctx.destination); s.start(); playing = s;
+  };
+  const setLvl = async lvl => {
+    if (!ACC.clip || lvl === 'low') return;
+    q('#ar-lvl').querySelectorAll('button').forEach(x => x.classList.toggle('on', x.dataset.l === lvl));
+    q('#ar-lb').textContent = 'Processando…';
+    const r = await renderClip(ACC.clip, lvl);
+    ACC.proc = r.y;
+    draw(q('#ar-wb'), r.y);
+    q('#ar-lb').textContent = `Com supressão: ${NS_LABEL[lvl]}`;
+    const peak = a => { let m = 0; for (const v of a) { const x = Math.abs(v); if (x > m) m = x; } return m; };
+    q('#ar-info').textContent = (lvl === 'auto' ? `O automático escolheu: ${KIND_LABEL[r.autoKind]}. ` : '')
+      + 'Os dois tocam o mesmo trecho gravado.' + (peak(ACC.clip.raw) < 0.01 ? ' A gravação ficou muito baixa: confira o microfone escolhido.' : '');
+  };
+  q('#ar-lvl').onclick = e => { const b = e.target.closest('[data-l]'); if (b) setLvl(b.dataset.l); };
+  q('#ar-pa').onclick = () => ACC.clip && play(ACC.clip.raw);
+  q('#ar-pb').onclick = () => ACC.proc && play(ACC.proc);
+  q('#ar-rec').onclick = async () => {
+    const btn = q('#ar-rec'); btn.disabled = true;
+    try {
+      ACC.clip = await recordRaw(5, (db, t) => {
+        const bar = document.getElementById('ar-bar'); if (bar) bar.style.width = pctOf(db) + '%';
+        const tt = document.getElementById('ar-t'); if (tt) tt.textContent = `Gravando… ${Math.max(0, 5 - t).toFixed(1)} s`;
+      });
+      q('#ar-t').textContent = 'Pronto. Compare abaixo.';
+      q('#ar-out').classList.remove('hidden');
+      draw(q('#ar-wa'), ACC.clip.raw);
+      await setLvl(normNs(prefs.ns) === 'low' ? 'off' : normNs(prefs.ns));
+    } catch (e) { console.warn(e); toast('Não consegui gravar o microfone.'); }
+    btn.disabled = false; btn.innerHTML = `${I.mic}Gravar de novo`;
+    const bar = document.getElementById('ar-bar'); if (bar) bar.style.width = '0';
+  };
+}
+// Som de teste na saída escolhida
+async function playTestTone() {
+  const sr = 48000, n = sr * 0.9, ctx = new OfflineAudioContext(1, n, sr);
+  [[660, 0], [880, 0.18], [1320, 0.36]].forEach(([f, t]) => {
+    const o = ctx.createOscillator(), g = ctx.createGain(); o.frequency.value = f;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(0.25, t + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
+    o.connect(g).connect(ctx.destination); o.start(t); o.stop(t + 0.45);
+  });
+  const y = (await ctx.startRendering()).getChannelData(0);
+  const i16 = new Int16Array(y.length); for (let i = 0; i < y.length; i++) i16[i] = y[i] * 32767;
+  const h = new DataView(new ArrayBuffer(44)); const w = (o, s) => [...s].forEach((c, i) => h.setUint8(o + i, c.charCodeAt(0)));
+  w(0, 'RIFF'); h.setUint32(4, 36 + i16.byteLength, true); w(8, 'WAVEfmt '); h.setUint32(16, 16, true); h.setUint16(20, 1, true); h.setUint16(22, 1, true);
+  h.setUint32(24, sr, true); h.setUint32(28, sr * 2, true); h.setUint16(32, 2, true); h.setUint16(34, 16, true); w(36, 'data'); h.setUint32(40, i16.byteLength, true);
+  const a = new Audio(URL.createObjectURL(new Blob([h.buffer, i16.buffer], { type: 'audio/wav' })));
+  try { if (prefs.out && a.setSinkId) await a.setSinkId(prefs.out); } catch {}
+  a.play().catch(() => toast('O navegador bloqueou o som. Clique de novo.'));
+}
+
+// ---------------------------------------------------------------------
+// Vídeo
+// ---------------------------------------------------------------------
+async function accVideo(body) {
+  if (!hasMedia()) { body.innerHTML = noMediaMsg('Vídeo'); return; }
+  const devs = await listDevices();
+  body.innerHTML = `<h2>Vídeo</h2>${allowBox(devs.some(d => d.label))}
+    <label class="fld">Câmera<select class="sel" id="av-cam">${devOpts(devs, 'videoinput', prefs.cam)}</select></label>
+    <div class="set-block"><div class="pf-h">Testar câmera</div>
+      <div class="cam-test"><video id="av-video" autoplay playsinline muted></video><button class="btn" id="av-camtest">Ligar a câmera de teste</button></div></div>`;
+  const q = s => body.querySelector(s);
+  wireAllow(q);
   const startCamTest = async () => {
     ACC.test?.cam?.getTracks().forEach(x => x.stop());
     try {
@@ -247,11 +351,10 @@ async function accVoz(body) {
       q('#av-camtest').textContent = 'Desligar a câmera de teste';
     } catch { toast('Não consegui usar a câmera.'); }
   };
+  q('#av-cam').onchange = e => { setPref('cam', e.target.value); toast('Câmera salva.'); if (ACC.test?.cam) startCamTest(); };
   q('#av-camtest').onclick = () => {
-    if (ACC.test?.cam) {
-      ACC.test.cam.getTracks().forEach(x => x.stop()); ACC.test.cam = null;
-      q('#av-video').srcObject = null; q('#av-camtest').textContent = 'Ligar a câmera de teste';
-    } else startCamTest();
+    if (ACC.test?.cam) { ACC.test.cam.getTracks().forEach(x => x.stop()); ACC.test.cam = null; q('#av-video').srcObject = null; q('#av-camtest').textContent = 'Ligar a câmera de teste'; }
+    else startCamTest();
   };
 }
 

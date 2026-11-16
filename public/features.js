@@ -14,7 +14,12 @@ const PREFS_DEFAULT = {
   muted: [],            // grupos silenciados
   mic: '', cam: '', out: '',
   noise: true,          // (antigo) reduzir ruído e eco
-  ns: 'std',            // supressão de ruído: off | std | strong
+  ns: 'auto',           // supressão de ruído: off | low | med | high | auto
+  inVol: 100,           // volume de entrada (%)
+  hpf: true,            // filtro de graves
+  comp: true,           // compressor
+  clickGuard: true,     // cliques de tecla/mouse não abrem o microfone
+  followRoomNs: true,   // usar a supressão recomendada pela sala
   echo: true,           // cancelamento de eco
   agc: true,            // ganho automático
   gate: 'auto',         // porta de ruído: off | auto | manual
@@ -30,6 +35,8 @@ const prefs = (() => {
   try { p = { ...PREFS_DEFAULT, ...JSON.parse(store.get('nexo_prefs') || '{}') }; } catch { p = { ...PREFS_DEFAULT }; }
   // quem tinha desligado "reduzir ruído" na versão antiga continua com ele desligado
   if (p.noise === false && !('nsSet' in p)) { p.ns = 'off'; p.echo = false; p.nsSet = 1; }
+  // v21: níveis novos. Quem nunca escolheu vai para o Automático; quem escolheu mantém o equivalente
+  if (!p.audioV) { p.ns = p.nsSet ? ({ std: 'low', strong: 'high' }[p.ns] || p.ns) : 'auto'; p.audioV = 21; }
   return p;
 })();
 function setPref(k, v) {
@@ -46,108 +53,6 @@ applyLook();
 // ---------------------------------------------------------------------
 // Microfone, câmera e saída de som escolhidos nas configurações
 // ---------------------------------------------------------------------
-function micConstraints() {
-  const c = {
-    deviceId: prefs.mic ? { ideal: prefs.mic } : undefined,
-    echoCancellation: !!prefs.echo, noiseSuppression: prefs.ns !== 'off', autoGainControl: !!prefs.agc,
-  };
-  // "Forte": isolamento de voz do navegador, quando ele tiver
-  try { if (prefs.ns === 'strong' && navigator.mediaDevices.getSupportedConstraints().voiceIsolation) c.voiceIsolation = true; } catch {}
-  return c;
-}
-
-// ---------------------------------------------------------------------
-// Processamento do microfone: filtro de graves + porta de ruído.
-// Roda num AudioWorklet (no processador de áudio), então continua
-// funcionando mesmo com o Nexo em segundo plano enquanto você joga.
-// ---------------------------------------------------------------------
-const GATE_WORKLET = `
-class NexoGate extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.mode = 'auto'; this.th = -50; this.env = -100; this.floor = -60;
-    this.gain = 0; this.hold = 0; this.level = -100; this.n = 0;
-    this.port.onmessage = e => { const d = e.data || {}; if (d.mode) this.mode = d.mode; if (typeof d.th === 'number') this.th = d.th; };
-  }
-  process(inputs, outputs) {
-    const inp = inputs[0], out = outputs[0];
-    if (!inp || !inp[0]) return true;
-    const x = inp[0], N = x.length, sr = sampleRate;
-    let sum = 0; for (let i = 0; i < N; i++) sum += x[i] * x[i];
-    const db = 10 * Math.log10(sum / N + 1e-12);
-    // envelope rápido para subir, lento para descer
-    this.env = db > this.env ? this.env + (db - this.env) * 0.5 : this.env + (db - this.env) * 0.08;
-    // piso de ruído: acompanha o silêncio devagar
-    if (this.env < this.floor) this.floor += (this.env - this.floor) * 0.05;
-    else this.floor += 0.004 * (N / 128);
-    let open;
-    if (this.mode === 'off') open = true;
-    else {
-      const th = this.mode === 'manual' ? this.th : Math.max(-65, Math.min(-30, this.floor + 12));
-      open = this.env > th;
-    }
-    if (open) this.hold = 0.28 * sr; else this.hold = Math.max(0, this.hold - N);
-    const target = open || this.hold > 0 ? 1 : 0;
-    const step = target > this.gain ? N / (0.006 * sr) : N / (0.09 * sr);
-    const g0 = this.gain;
-    this.gain = target > g0 ? Math.min(1, g0 + step) : Math.max(0, g0 - step);
-    for (let c = 0; c < out.length; c++) {
-      const xi = inp[c] || inp[0], o = out[c];
-      for (let i = 0; i < N; i++) o[i] = xi[i] * (g0 + (this.gain - g0) * i / N);
-    }
-    if (++this.n % 8 === 0) this.port.postMessage({ level: this.env, open: this.gain > 0.5, th: this.mode === 'manual' ? this.th : Math.max(-65, Math.min(-30, this.floor + 12)) });
-    return true;
-  }
-}
-registerProcessor('nexo-gate', NexoGate);`;
-let gateModule = null;
-async function ensureGateModule(ctx) {
-  if (!ctx.audioWorklet) throw new Error('sem AudioWorklet');
-  if (gateModule?.ctx === ctx) return gateModule.p;
-  const url = URL.createObjectURL(new Blob([GATE_WORKLET], { type: 'text/javascript' }));
-  gateModule = { ctx, p: ctx.audioWorklet.addModule(url) };
-  return gateModule.p;
-}
-// Recebe o microfone "cru" e devolve a faixa já tratada (a que vai para a chamada)
-async function processMic(raw, onLevel) {
-  ensureAudioCtx();
-  const ctx = call.audioCtx;
-  try {
-    if (!ctx) throw new Error('sem áudio');
-    await ensureGateModule(ctx);
-    const src = ctx.createMediaStreamSource(new MediaStream([raw]));
-    const hp = ctx.createBiquadFilter();
-    hp.type = 'highpass'; hp.frequency.value = prefs.ns === 'strong' ? 120 : prefs.ns === 'off' ? 20 : 80; hp.Q.value = 0.7;
-    const gate = new AudioWorkletNode(ctx, 'nexo-gate', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
-    gate.port.postMessage({ mode: prefs.gate, th: prefs.gateDb });
-    if (onLevel) gate.port.onmessage = e => onLevel(e.data);
-    const dst = ctx.createMediaStreamDestination();
-    const pttGain = ctx.createGain();   // "pressionar para falar"
-    src.connect(hp).connect(gate).connect(pttGain).connect(dst);
-    const track = dst.stream.getAudioTracks()[0];
-    track._raw = raw;
-    track._gate = gate;
-    track._nodes = [src, hp, gate, pttGain];
-    track._pttGain = pttGain;
-    setTimeout(() => { if (typeof applyPtt === 'function' && call.micTrack === track) applyPtt(); }, 0);
-    // parar a faixa tratada também solta o microfone de verdade
-    const stop = track.stop.bind(track);
-    track.stop = () => { stop(); try { raw.stop(); } catch {} try { src.disconnect(); hp.disconnect(); gate.disconnect(); pttGain.disconnect(); } catch {} };
-    return track;
-  } catch (e) {
-    console.warn('processamento do microfone indisponível', e);
-    return raw;   // navegador antigo: manda o microfone sem a porta de ruído
-  }
-}
-// Abre o microfone com as configurações atuais
-async function acquireMic(onLevel) {
-  const s = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
-  return processMic(s.getAudioTracks()[0], onLevel);
-}
-// Ajustes da porta de ruído valem na hora, sem reabrir o microfone
-function updateGate() {
-  for (const t of [call.micTrack, ACC?.test?.track]) t?._gate?.port.postMessage({ mode: prefs.gate, th: prefs.gateDb });
-}
 function camDeviceConstraint() {
   return prefs.cam && !isMobile() ? { deviceId: { ideal: prefs.cam } } : {};
 }
@@ -161,7 +66,8 @@ function applySinkAll() {
   try { if (prefs.out && call.audioCtx?.setSinkId) call.audioCtx.setSinkId(prefs.out).catch(() => {}); } catch {}
 }
 // Troca o microfone no meio da chamada, sem cair
-async function switchMicDevice() {
+// Refaz o microfone da chamada (troca de aparelho ou de configuração de áudio)
+async function switchMicDevice(quiet) {
   if (!call.channelId || !call.micTrack) return;
   try {
     const t = await acquireMic();
@@ -170,8 +76,9 @@ async function switchMicDevice() {
     call.micTrack = t;
     setTrackForAll(0, t);
     attachMeter('me', t);
+    applyPtt?.();
     old.stop();
-    toast('Microfone trocado.');
+    if (!quiet) toast('Microfone atualizado.');
   } catch { toast('Não consegui usar esse microfone.'); }
 }
 
