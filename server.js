@@ -351,6 +351,23 @@ function dropVoice(cid, sid) {
   io.in(sid).socketsLeave('v:' + cid);
 }
 
+// Quem está numa sala de voz (serve tanto para grupo quanto para conversa privada)
+function voiceRoomView(cid) {
+  const r = voice.get(cid);
+  return r ? [...r.entries()].map(([sid, p]) => ({ sid, ...p })) : [];
+}
+// Avisa quem precisa saber que a sala mudou
+function notifyVoice(cid) {
+  const pr = dmPeers(cid);
+  if (pr) {
+    const people = voiceRoomView(cid);
+    for (const x of pr) io.to('u:' + x).emit('dm:voice', { channelId: cid, people });
+    return;
+  }
+  const f = findChannel(cid);
+  if (f) emitPresence(f.g);
+}
+
 function voicePresence(g) {
   const out = {};
   for (const c of g.channels) {
@@ -434,9 +451,10 @@ function linkDm(a, b) {
 function dmEntry(uid, other) {
   const u = db.users[other];
   if (!u) return null;
+  const inCall = voiceRoomView(dmId(uid, other)).length > 0;
   const msgs = db.messages[dmId(uid, other)] || [];
   const last = msgs[msgs.length - 1];
-  return { user: memberView(u), last: last ? { text: last.text, ts: last.ts, mine: last.userId === uid, att: !!last.att } : null };
+  return { user: memberView(u), inCall, last: last ? { text: last.text, ts: last.ts, mine: last.userId === uid, att: !!last.att } : null };
 }
 
 // ------------------------------------------------------------------
@@ -618,7 +636,7 @@ io.on('connection', socket => {
     linkDm(u.id, userId);
     save();
     io.to('u:' + userId).emit('dm:update', { entry: dmEntry(userId, u.id) });
-    reply(cb, { channelId: dmId(u.id, userId), user: memberView(other), messages: (db.messages[dmId(u.id, userId)] || []).slice(-150) });
+    reply(cb, { channelId: dmId(u.id, userId), user: memberView(other), inCall: voiceRoomView(dmId(u.id, userId)).length > 0, messages: (db.messages[dmId(u.id, userId)] || []).slice(-150) });
   });
 
   socket.on('dm:close', ({ userId } = {}, cb) => {
@@ -980,14 +998,22 @@ io.on('connection', socket => {
     if (r) { r.delete(socket.id); if (!r.size) voice.delete(cid); }
     socket.to('v:' + cid).emit('voice:peer-left', { sid: socket.id });
     socket.leave('v:' + cid);
-    const f = findChannel(cid);
-    if (f) emitPresence(f.g);
+    const pr = dmPeers(cid);
+    // se quem estava chamando desistiu, para de tocar do outro lado
+    if (pr && !voice.get(cid)) for (const x of pr) io.to('u:' + x).emit('dm:ring-stop', { channelId: cid });
+    notifyVoice(cid);
   }
 
   socket.on('voice:join', ({ channelId } = {}, cb) => {
-    const f = findChannel(channelId);
-    if (!f || !f.g.members.includes(u.id) || f.c.type !== 'voice') return reply(cb, { error: 'Sala não encontrada.' });
-    if (!can(f.g, u.id, 'connect')) return reply(cb, { error: 'Você não tem permissão para entrar em salas de voz.' });
+    const pr = dmPeers(channelId);
+    let f = null;
+    if (pr) {
+      if (!pr.includes(u.id)) return reply(cb, { error: 'Conversa não encontrada.' });
+    } else {
+      f = findChannel(channelId);
+      if (!f || !f.g.members.includes(u.id) || f.c.type !== 'voice') return reply(cb, { error: 'Sala não encontrada.' });
+      if (!can(f.g, u.id, 'connect')) return reply(cb, { error: 'Você não tem permissão para entrar em salas de voz.' });
+    }
     leaveVoice();
     const r = voice.get(channelId) || new Map();
     if (r.size >= 12) return reply(cb, { error: 'Sala cheia (máximo 12 pessoas).' });
@@ -1000,7 +1026,25 @@ io.on('connection', socket => {
     socket.join('v:' + channelId);
     socket.to('v:' + channelId).emit('voice:peer-joined', { sid: socket.id, ...me });
     reply(cb, { peers, sid: socket.id, dupe });
-    emitPresence(f.g);
+    if (pr) {
+      const other = pr.find(x => x !== u.id);
+      // primeiro a entrar numa conversa privada = está ligando
+      const alone = [...r.values()].every(x => x.userId === u.id);
+      if (alone) io.to('u:' + other).emit('dm:ring', { channelId, from: publicUser(u) });
+      else io.to('u:' + other).emit('dm:ring-stop', { channelId });
+      io.to('u:' + u.id).emit('dm:ring-stop', { channelId });
+    }
+    notifyVoice(channelId);
+  });
+
+  // Recusar uma ligação privada
+  socket.on('dm:decline', ({ channelId } = {}, cb) => {
+    const pr = dmPeers(channelId);
+    if (!pr || !pr.includes(u.id)) return reply(cb, { error: 'Conversa não encontrada.' });
+    const other = pr.find(x => x !== u.id);
+    io.to('u:' + u.id).emit('dm:ring-stop', { channelId });
+    io.to('u:' + other).emit('dm:declined', { channelId, by: publicUser(u) });
+    reply(cb, { ok: true });
   });
 
   socket.on('voice:leave', leaveVoice);
@@ -1011,11 +1055,10 @@ io.on('connection', socket => {
     if (!p) return;
     for (const k of ['mic', 'cam', 'screen']) if (typeof st[k] === 'boolean') p[k] = st[k];
     if (p.fmute) p.mic = false;
-    const fv = findChannel(currentVoice);
+    const fv = dmPeers(currentVoice) ? null : findChannel(currentVoice);
     if (fv && !can(fv.g, u.id, 'video')) { p.cam = false; p.screen = false; }
     socket.to('v:' + currentVoice).emit('voice:state', { sid: socket.id, ...p });
-    const f = findChannel(currentVoice);
-    if (f) emitPresence(f.g);
+    notifyVoice(currentVoice);
   });
 
   // Moderação da chamada: silenciar, desconectar e mover
@@ -1023,6 +1066,7 @@ io.on('connection', socket => {
     let cid = null, p = null;
     for (const [ch, r] of voice) if (r.has(sid)) { cid = ch; p = r.get(sid); break; }
     if (!p) return reply(cb, { error: 'Essa pessoa não está mais na chamada.' });
+    if (dmPeers(cid)) return reply(cb, { error: 'Isso não existe em conversa privada.' });
     const f = findChannel(cid);
     if (!f || !f.g.members.includes(u.id)) return reply(cb, { error: 'Sem permissão.' });
     const g = f.g;

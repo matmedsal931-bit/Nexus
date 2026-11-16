@@ -7,6 +7,8 @@ App de grupos estilo Discord, para **PC e celular**:
 - **Canais de texto** com chat em tempo real e histórico salvo
 - **Salas de voz** com **chamada de vídeo** (câmera frontal/traseira no celular)
 - **Transmissão de tela em Full HD** (1080p 30fps ou 60fps, com áudio do PC)
+- **Ligação privada** dentro da conversa: voz, vídeo e transmissão de tela, com toque de chamada, atender/recusar e aviso de "ocupado"
+- **Tela de carregamento própria** com a logo do Nexo, no lugar da página do Render, quando o servidor está acordando
 - **Amigos:** pedido por nome de usuário ou por ID, pendentes, aceitar/recusar, lista com quem está online
 - **Na chamada:** volume de cada pessoa separado (voz e transmissão, até 200%), e **cada um escolhe a resolução que recebe** da live sem mexer na dos outros
 - **Moderação de voz:** silenciar para todos, desconectar da chamada e mover de sala — por cargo ou como administrador
@@ -23,7 +25,7 @@ App de grupos estilo Discord, para **PC e celular**:
 - Instalável como aplicativo (PWA) no PC e no celular, com botão "Instalar" dentro do app
 
 ## 🤖 App para Android (APK)
-O arquivo `public/nexo.apk` é o app Android (versão 1.2). Depois de publicar, ele fica disponível em
+O arquivo `public/nexo.apk` é o app Android (versão 1.3). Depois de publicar, ele fica disponível em
 `https://SEU-LINK.onrender.com/nexo.apk`. Abra esse endereço no celular, baixe e instale
 (o Android pede para permitir a instalação de "fontes desconhecidas").
 
@@ -33,6 +35,18 @@ O arquivo `public/nexo.apk` é o app Android (versão 1.2). Depois de publicar, 
   APK novo quando a parte nativa mudar; nesse caso o próprio app avisa.
 - O áudio dos jogos/apps do celular não é transmitido, só a imagem (e o seu microfone).
 - iPhone não aceita APK; nele o Nexo funciona pelo Safari, sem transmitir a tela.
+
+## ⏱️ Evitar a demora da primeira abertura
+No plano grátis, o Render desliga o servidor depois de 15 minutos sem ninguém usando, e a próxima
+abertura leva quase um minuto. O Nexo já mostra a **sua tela de carregamento** nesse tempo (logo + animação),
+mas dá para quase eliminar a espera:
+
+1. No GitHub, abra a aba **Actions** e clique em **I understand my workflows, go ahead and enable them**.
+2. O arquivo `.github/workflows/manter-acordado.yml` já vai no projeto: ele acessa o site a cada 10 minutos.
+3. Abra o arquivo e troque a URL pela do seu site, se for diferente.
+
+Observação: o GitHub pausa esse agendamento se o repositório ficar 60 dias sem nenhuma alteração —
+basta rodar **Run workflow** na mão para religar.
 
 ## 🔄 Como atualizar o app que já está no ar
 1. Abra o seu repositório no GitHub.

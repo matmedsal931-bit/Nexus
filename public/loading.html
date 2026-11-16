@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111216">
+<title>Nexo</title>
+<link rel="icon" href="/icons/icon-192.png">
+<style>
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: radial-gradient(1200px 600px at 20% 0%, #2a1f5c 0%, transparent 60%),
+                radial-gradient(900px 500px at 100% 100%, #123a3a 0%, transparent 60%), #111216;
+    color: #e8e9ee; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 22px; padding: 24px; text-align: center;
+  }
+  .ring { position: relative; width: 132px; height: 132px; display: grid; place-items: center; }
+  .ring svg { position: absolute; inset: 0; width: 132px; height: 132px; transform: rotate(-90deg); }
+  .ring circle { fill: none; stroke-width: 5; stroke-linecap: round; }
+  .trk { stroke: rgba(255,255,255,.08); }
+  .arc { stroke: #7c5cff; stroke-dasharray: 90 310; animation: spin 1.3s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); transform-origin: 66px 66px; } }
+  .logo { width: 84px; height: 84px; border-radius: 24px; animation: breathe 2.4s ease-in-out infinite; }
+  @keyframes breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.07); } }
+  h1 { margin: 0; font-size: 30px; letter-spacing: .5px; }
+  p { margin: 0; color: #9a9daa; max-width: 330px; }
+  .dots::after { content: ''; animation: dots 1.4s steps(4, end) infinite; }
+  @keyframes dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
+  .slow { font-size: 14px; color: #7c7f8c; max-width: 340px; opacity: 0; transition: opacity .4s; }
+  .slow.on { opacity: 1; }
+  button { margin-top: 4px; border: 0; border-radius: 10px; padding: 11px 20px; background: #7c5cff; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button:hover { background: #6846f5; }
+</style>
+</head>
+<body>
+  <div class="ring">
+    <svg viewBox="0 0 132 132"><circle class="trk" cx="66" cy="66" r="62"></circle><circle class="arc" cx="66" cy="66" r="62"></circle></svg>
+    <img class="logo" src="/icons/icon-192.png" alt="Nexo">
+  </div>
+  <h1>Nexo</h1>
+  <p id="msg" class="dots">Conectando</p>
+  <p class="slow" id="slow"></p>
+  <button id="retry" hidden>Tentar de novo</button>
+
+<script>
+(function () {
+  var msg = document.getElementById('msg'), slow = document.getElementById('slow'),
+      retry = document.getElementById('retry'), t0 = Date.now(), tries = 0, stopped = false;
+
+  retry.onclick = function () { location.replace('/'); };
+
+  function tick() {
+    if (stopped) return;
+    var s = Math.round((Date.now() - t0) / 1000);
+    if (!navigator.onLine) {
+      msg.className = '';
+      msg.textContent = 'Sem conexão com a internet';
+      slow.textContent = 'Confira o seu Wi-Fi ou os dados móveis. A tela volta sozinha quando a conexão voltar.';
+      slow.className = 'slow on';
+      return;
+    }
+    msg.className = 'dots';
+    msg.textContent = s < 8 ? 'Conectando' : 'Acordando o servidor';
+    if (s >= 8) {
+      slow.className = 'slow on';
+      slow.textContent = s < 45
+        ? 'O servidor desliga quando ninguém está usando. A primeira abertura leva até um minuto.'
+        : 'Está demorando mais que o normal, mas ainda estou tentando.';
+    }
+    if (s >= 90) retry.hidden = false;
+  }
+
+  function ping() {
+    if (stopped) return;
+    tries++;
+    fetch('/health?t=' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { if (r.ok) { stopped = true; location.replace('/'); } })
+      .catch(function () {});
+  }
+
+  setInterval(tick, 500);
+  setInterval(ping, 1500);
+  window.addEventListener('online', ping);
+  tick(); ping();
+})();
+</script>
+</body>
+</html>

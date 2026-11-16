@@ -46,9 +46,15 @@ const I = {
   x: P('<path d="M18 6 6 18M6 6l12 12"/>'),
   chev: P('<path d="m6 9 6 6 6-6"/>'),
   gear: P('<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.8 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0-1.2-2.8H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/>'),
+  vol: P('<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>'),
+  volOff: P('<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>'),
+  userPlus: P('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/>'),
+  userCheck: P('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="m16 11 2 2 4-4"/>'),
+  move: P('<path d="M5 9 2 12l3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20"/>'),
   home: P('<path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V20a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9.5"/><path d="M9 21v-6h6v6"/>'),
   file: P('<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>'),
   paperclip: P('<circle cx="12" cy="12" r="10"/><path d="M12 8v8M8 12h8"/>'),
+  phone: P('<path d="M22 16.9v3a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .3 1.9.6 2.8a2 2 0 0 1-.5 2.1L7.9 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.5 2.8.6a2 2 0 0 1 1.7 2z"/>'),
   folder: P('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2zM12 11v6M9 14h6"/>'),
 };
 
@@ -67,6 +73,7 @@ const S = {
   dms: [],                // conversas privadas
   dmPeer: null,           // com quem estou conversando agora
   atts: [],               // arquivos escolhidos, esperando envio
+  friends: { friends: [], in: [], out: [] },
   unread: new Set(),      // channelIds com mensagens novas
   ice: [{ urls: 'stun:stun.l.google.com:19302' }],
   socket: null,
@@ -78,7 +85,8 @@ const linkify = t => esc(t).replace(/(https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"])/g, '<
 const initial = n => esc((n || '?').trim().charAt(0) || '?');
 // ---- Cargos e permissoes (mesma regra do servidor, usada so para a interface) ----
 const PERM_KEYS = ['admin', 'manageGroup', 'manageChannels', 'manageRoles', 'manageEmoji', 'kick', 'ban',
-  'manageMessages', 'viewAudit', 'sendMessages', 'addReactions', 'connect', 'video'];
+  'manageMessages', 'viewAudit', 'muteMembers', 'moveMembers', 'disconnectMembers',
+  'sendMessages', 'addReactions', 'connect', 'video'];
 function permsOf(g, uid) {
   const out = {};
   if (!g) return out;
@@ -204,6 +212,7 @@ $('#auth-form').addEventListener('submit', async e => {
 
 function logout() {
   closeSettings();
+  stopIncoming();
   if (call.channelId) leaveCall();
   if (S.token) fetch('/api/logout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: S.token }) }).catch(() => {});
   S.socket?.disconnect();
@@ -235,6 +244,8 @@ function connect() {
     S.user = d.user;
     S.groups = d.groups;
     S.dms = d.dms || [];
+    S.friends = d.friends || { friends: [], in: [], out: [] };
+    S.friends.friends.concat(S.friends.in, S.friends.out).forEach(cacheUser);
     S.users = {};
     S.dms.forEach(x => cacheUser(x.user));
     d.groups.forEach(g => g.members.forEach(cacheUser));
@@ -246,6 +257,7 @@ function connect() {
     if (S.view !== 'voice' || !call.channelId) openDefaultChannel();
     else if (S.cid) loadHistory(S.cid);
     if (S.pendingInvite) { const inv = S.pendingInvite; S.pendingInvite = null; joinGroup(inv); }
+    if (call.rejoin) rejoinCall();
   });
 
   sock.on('group:update', g => {
@@ -288,6 +300,59 @@ function connect() {
   });
 
   sock.on('profile:me', u => { S.user = u; renderAll(); if (S.cid) renderMessages('keep'); });
+  sock.on('friends', f => {
+    S.friends = f;
+    [...f.friends, ...f.in, ...f.out].forEach(cacheUser);
+    renderRail();
+    if (S.gid === '@me') { renderChannels(); if (S.view === 'friends') renderFriends(); }
+  });
+  sock.on('dm:ring', ({ channelId, from }) => {
+    if (call.channelId === channelId) return;      // já estou na ligação
+    if (call.channelId) {                           // ocupado em outra chamada
+      emit('dm:decline', { channelId });
+      toast(`${from.name} tentou te ligar.`, 6000);
+      return;
+    }
+    showIncoming(channelId, from);
+  });
+  sock.on('dm:ring-stop', ({ channelId }) => {
+    if (ring.channelId === channelId) { stopIncoming(); closeModal(); }
+  });
+  sock.on('dm:declined', ({ by }) => {
+    toast(`${by.name} recusou a ligação.`, 5000);
+    if (callIsDm()) leaveCall();
+  });
+  sock.on('dm:voice', ({ channelId, people }) => {
+    const other = dmOther(channelId);
+    const d = S.dms.find(x => x.user.id === other);
+    if (d) { d.inCall = people.length > 0; if (S.gid === '@me') renderChannels(); }
+    // o outro desligou: encerra do meu lado também
+    if (call.channelId === channelId && people.length === 1 && call.peers.size === 0 && call.hadPeer) {
+      toast('A ligação terminou.');
+      leaveCall();
+    }
+    if (call.channelId === channelId && people.length > 1) call.hadPeer = true;
+  });
+
+  sock.on('voice:force', ({ action, channelId, by }) => {
+    if (action === 'mute') {
+      call.fmute = true;
+      call.micOn = false;
+      if (call.micTrack) call.micTrack.enabled = false;
+      sendState(); renderControls(); renderCallbar(); renderTiles();
+      toast(`${by} silenciou o seu microfone.`, 5000);
+    } else if (action === 'unmute') {
+      call.fmute = false;
+      renderControls(); renderCallbar();
+      toast(`${by} tirou o silêncio do seu microfone.`);
+    } else if (action === 'disconnect') {
+      leaveCall();
+      toast(`${by} desconectou você da chamada.`, 5000);
+    } else if (action === 'move') {
+      toast(`${by} moveu você de sala.`);
+      joinCall(channelId);
+    }
+  });
   sock.on('dm:update', ({ entry }) => {
     if (!entry) return;
     cacheUser(entry.user);
@@ -320,14 +385,27 @@ function connect() {
   });
 
   sock.on('disconnect', reason => {
-    if (call.channelId) { leaveCall(); toast('Conexão perdida — você saiu da chamada.'); }
-    if (reason !== 'io client disconnect') toast('Reconectando…');
+    if (reason === 'io client disconnect') return;
+    if (call.channelId) {
+      // a chamada continua: só reconectamos quando a internet voltar
+      call.rejoin = call.channelId;
+      for (const sid of [...call.peers.keys()]) removePeer(sid);
+      call.mySid = null;
+      renderTiles();
+      toast('Conexão caiu. Reconectando à chamada…', 4000);
+    } else toast('Reconectando…');
   });
 
   sock.on('voice:peer-joined', p => { if (call.channelId) { addPeer(p); playJoinSound(true); } });
   sock.on('voice:peer-left', ({ sid }) => { if (call.peers.has(sid)) { removePeer(sid); playJoinSound(false); } });
   sock.on('voice:state', p => onPeerState(p));
   sock.on('signal', ({ from, data }) => onSignal(from, data));
+  sock.on('voice:quality', ({ from, maxH }) => {
+    const peer = call.peers.get(from);
+    if (!peer) return;
+    peer.wantH = maxH || 0;
+    if (call.screenTrack) tunePeerSenders(peer);
+  });
 }
 
 function notify(msg, groupId, channelId, dmPeer) {
@@ -352,7 +430,7 @@ function askNotifyPermission() {
 function openDefaultChannel() {
   if (S.gid === '@me') {
     const d = S.dms.find(x => x.user.id === S.dmPeer) || S.dms[0];
-    if (d) openDM(d.user.id); else { S.cid = null; S.dmPeer = null; setView('empty'); renderAll(); }
+    if (d) openDM(d.user.id); else openFriends();
     return;
   }
   const g = curGroup();
@@ -414,8 +492,60 @@ async function loadHistory(cid) {
   if (r.messages) { S.msgs[cid] = r.messages; if (S.cid === cid) renderMessages(); }
 }
 
+function openFriends() {
+  S.gid = '@me'; S.dmPeer = null; S.cid = null;
+  store.set('nexo_gid', '@me');
+  setView('friends');
+  closeDrawer();
+  renderAll();
+  renderFriends();
+}
+let friendTab = 'todos';
+function renderFriends() {
+  const el = $('#friends-view');
+  const f = S.friends;
+  const tabs = [['todos', `Todos — ${f.friends.length}`], ['pendente', `Pendentes${f.in.length + f.out.length ? ` — ${f.in.length + f.out.length}` : ''}`], ['add', 'Adicionar amigo']];
+  if (friendTab === 'add') {
+    el.innerHTML = tabHtml() + `<h2 style="margin:0">Adicionar amigo</h2>
+      <p class="muted" style="margin:0">Você pode adicionar amigos pelo nome de usuário (o @, não o nome exibido).</p>
+      <form class="fadd" id="fa-form"><input id="fa-q" placeholder="Insira um nome de usuário" autocomplete="off"><button class="btn primary">Enviar pedido</button></form>
+      <p class="muted" style="margin:0;font-size:13px">Dica: o seu nome de usuário é <b style="color:var(--txt)">@${esc(S.user.username)}</b> — passe para quem quiser te adicionar.</p>`;
+    el.querySelector('#fa-form').onsubmit = async e => {
+      e.preventDefault();
+      const i = el.querySelector('#fa-q');
+      const r = await emit('friend:add', { query: i.value });
+      if (r.error) return toast(r.error);
+      i.value = '';
+      toast(r.msg || 'Pedido enviado!');
+    };
+  } else if (friendTab === 'pendente') {
+    const row = (u, kind) => `<div class="frow">${avatar(u, 'sm')}<span class="col"><b>${esc(u.name)}</b><span>${kind === 'in' ? 'Quer ser seu amigo' : 'Pedido enviado'} · @${esc(u.username)}</span></span>
+      <span class="acts">${kind === 'in' ? `<button class="btn primary sm" data-ok="${esc(u.id)}">Aceitar</button>` : ''}<button class="btn sm" data-no="${esc(u.id)}">${kind === 'in' ? 'Recusar' : 'Cancelar'}</button></span></div>`;
+    el.innerHTML = tabHtml() + (f.in.length || f.out.length
+      ? f.in.map(u => row(u, 'in')).join('') + f.out.map(u => row(u, 'out')).join('')
+      : `<div class="set-empty"><b>Nenhum pedido</b><span>Quando alguém te adicionar, aparece aqui.</span></div>`);
+  } else {
+    const row = u => `<div class="frow">${avatar(u, 'sm')}<span class="col"><b style="color:${esc(u.color)}">${esc(u.name)}</b><span>${u.status || PRESENCE_LABEL[presOf(u)] || 'Offline'} · @${esc(u.username)}</span></span>
+      <span class="acts"><button class="btn sm" data-dm="${esc(u.id)}">Mensagem</button><button class="btn sm" data-prof="${esc(u.id)}">Perfil</button><button class="btn danger sm" data-no="${esc(u.id)}">Remover</button></span></div>`;
+    const on = f.friends.filter(u => presOf(u) !== 'offline'), off = f.friends.filter(u => presOf(u) === 'offline');
+    el.innerHTML = tabHtml() + (f.friends.length
+      ? (on.length ? `<div class="sec">Online — ${on.length}</div>` + on.map(row).join('') : '')
+        + (off.length ? `<div class="sec">Offline — ${off.length}</div>` + off.map(row).join('') : '')
+      : `<div class="set-empty"><b>Nenhum amigo ainda</b><span>Use a aba "Adicionar amigo" para chamar alguém.</span></div>`);
+  }
+  el.querySelectorAll('.ftab').forEach(b => b.onclick = () => { friendTab = b.dataset.t; renderFriends(); });
+  el.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => emit('friend:accept', { userId: b.dataset.ok }));
+  el.querySelectorAll('[data-no]').forEach(b => b.onclick = () => emit('friend:remove', { userId: b.dataset.no }));
+  el.querySelectorAll('[data-dm]').forEach(b => b.onclick = () => openDM(b.dataset.dm));
+  el.querySelectorAll('[data-prof]').forEach(b => b.onclick = () => openProfile(b.dataset.prof));
+  function tabHtml() {
+    return `<div class="ftabs">${tabs.map(([k, t]) => `<button class="ftab ${k === friendTab ? 'active' : ''}" data-t="${k}">${esc(t)}${k === 'pendente' && f.in.length ? `<span class="badge">${f.in.length}</span>` : ''}</button>`).join('')}</div>`;
+  }
+}
+
 function setView(v) {
   S.view = v;
+  $('#friends-view').classList.toggle('hidden', v !== 'friends');
   $('#empty-view').classList.toggle('hidden', v !== 'empty');
   $('#chat-view').classList.toggle('hidden', v !== 'chat');
   $('#voice-view').classList.toggle('hidden', v !== 'voice');
@@ -441,7 +571,7 @@ function renderRail() {
   const home = document.createElement('button');
   home.className = 'rail-home' + (S.gid === '@me' ? '' : ' off') + (dmUnread ? ' unread' : '');
   home.title = 'Mensagens diretas';
-  home.innerHTML = I.home;
+  home.innerHTML = I.home + (S.friends.in.length ? `<span class="badge">${S.friends.in.length}</span>` : '');
   home.onclick = () => selectGroup('@me');
   rail.appendChild(home);
   if (S.groups.length) { const sp = document.createElement('div'); sp.className = 'rail-sep'; rail.appendChild(sp); }
@@ -464,7 +594,24 @@ function renderRail() {
   rail.appendChild(add);
 }
 
+// Junta as sessões da mesma pessoa (vários aparelhos) numa linha só
+function dedupeVoice(people) {
+  const out = new Map();
+  for (const p of people) {
+    const cur = out.get(p.userId);
+    if (!cur) { out.set(p.userId, { ...p }); continue; }
+    cur.mic = cur.mic || p.mic; cur.cam = cur.cam || p.cam; cur.screen = cur.screen || p.screen;
+    cur.fmute = cur.fmute && p.fmute;
+    if (p.cam || p.mic) cur.sid = p.sid;
+  }
+  return [...out.values()];
+}
+
 const dmChannelId = other => 'd' + [S.user.id, other].sort().join('_');
+// Numa conversa privada não há cargos: câmera e tela são sempre liberadas
+const isDmChannel = cid => typeof cid === 'string' && cid[0] === 'd' && cid.includes('_');
+const dmOther = cid => isDmChannel(cid) ? cid.slice(1).split('_').find(x => x !== S.user?.id) : null;
+const callIsDm = () => isDmChannel(call.channelId);
 
 function renderChannels() {
   const head = $('#side-head'), list = $('#channels');
@@ -487,13 +634,13 @@ function renderChannels() {
   const row = c => {
     if (c.type === 'text') {
       const active = c.id === S.cid && S.view === 'chat';
-      return `<button class="ch ${active ? 'active' : ''} ${S.unread.has(c.id) ? 'unread' : ''}" data-cid="${c.id}">${I.hash}<span class="label">${esc(c.name)}</span>${del(c)}</button>`;
+      return `<button class="ch ${active ? 'active' : ''} ${S.unread.has(c.id) ? 'unread' : ''}" data-cid="${c.id}" data-ch="${c.id}">${I.hash}<span class="label">${esc(c.name)}</span>${del(c)}</button>`;
     }
     const people = g.voice?.[c.id] || [];
     const active = call.channelId === c.id && S.view === 'voice';
-    return `<button class="ch ${active ? 'active' : ''}" data-vid="${c.id}">${I.speaker}<span class="label">${esc(c.name)}</span>${del(c)}</button>`
-      + (people.length ? `<div class="vusers">` + people.map(p => `<div class="vuser">${avatar(p, 'sm')}<span class="nm">${esc(p.username)}</span>
-        ${p.screen ? '<span class="live">AO VIVO</span>' : ''}${p.cam ? I.cam : ''}${p.mic ? '' : I.micOff}</div>`).join('') + `</div>` : '');
+    return `<button class="ch ${active ? 'active' : ''}" data-vid="${c.id}" data-ch="${c.id}">${I.speaker}<span class="label">${esc(c.name)}</span>${del(c)}</button>`
+      + (people.length ? `<div class="vusers">` + dedupeVoice(people).map(p => `<div class="vuser" data-sid="${esc(p.sid)}" data-uid="${esc(p.userId)}" title="Opções">${avatar(p, 'sm')}<span class="nm">${esc(nameOf(p.userId, p.username))}</span>
+        ${p.screen ? '<span class="live">AO VIVO</span>' : ''}${p.cam ? I.cam : ''}${p.fmute ? '<span class="fm">🔇</span>' : (p.mic ? '' : I.micOff)}</div>`).join('') + `</div>` : '');
   };
   const add = (type, cat = '') => canCh ? `<button class="icon-btn" data-add="${type}" data-cat="${cat}" title="Criar canal">${I.plus}</button>` : '';
   const cats = g.categories || [];
@@ -501,18 +648,32 @@ function renderChannels() {
   const loose = g.channels.filter(c => !c.cat || !ids.has(c.cat));
   const lt = loose.filter(c => c.type === 'text'), lv = loose.filter(c => c.type === 'voice');
   let html = '';
-  if (lt.length || !cats.length) html += `<div class="sec">Canais de texto ${add('text')}</div>` + lt.map(row).join('');
-  if (lv.length || !cats.length) html += `<div class="sec">Salas de voz ${add('voice')}</div>` + lv.map(row).join('');
+  if (lt.length || !cats.length) html += `<div class="sec" data-cat="">Canais de texto ${add('text')}</div>` + lt.map(row).join('');
+  if (lv.length || !cats.length) html += `<div class="sec" data-cat="">Salas de voz ${add('voice')}</div>` + lv.map(row).join('');
   for (const cat of cats) {
     const cs = g.channels.filter(c => c.cat === cat.id);
-    html += `<div class="sec cat">${esc(cat.name)} <span>${add('text', cat.id)}${canCh ? `<button class="icon-btn" data-delcat="${cat.id}" title="Excluir categoria">${I.trash}</button>` : ''}</span></div>`
+    html += `<div class="sec cat" data-cat="${cat.id}">${esc(cat.name)} <span>${add('text', cat.id)}${canCh ? `<button class="icon-btn" data-delcat="${cat.id}" title="Excluir categoria">${I.trash}</button>` : ''}</span></div>`
       + cs.filter(c => c.type === 'text').map(row).join('') + cs.filter(c => c.type === 'voice').map(row).join('');
   }
   list.innerHTML = html;
   list.querySelectorAll('[data-cid]').forEach(b => b.onclick = () => openTextChannel(b.dataset.cid));
   list.querySelectorAll('[data-vid]').forEach(b => b.onclick = () => joinCall(b.dataset.vid));
+  list.querySelectorAll('.vuser[data-sid]').forEach(el => el.onclick = e => {
+    e.stopPropagation();
+    const peer = call.peers.get(el.dataset.sid) || (el.dataset.uid === S.user.id ? null : null);
+    const r = el.getBoundingClientRect();
+    if (peer) openPeerMenu(peer, false, r.left, r.bottom + 4);
+    else openProfile(el.dataset.uid);
+  });
   list.querySelectorAll('[data-add]').forEach(b => b.onclick = e => { e.stopPropagation(); channelModal(g, b.dataset.add, b.dataset.cat); });
   list.querySelectorAll('[data-del]').forEach(b => b.onclick = e => { e.stopPropagation(); deleteChannelModal(b.dataset.del); });
+  list.querySelectorAll('.ch[data-ch]').forEach(el => {
+    const open = e => { e.preventDefault(); openChannelMenu(el.dataset.ch, e.clientX ?? 0, e.clientY ?? 0); };
+    el.oncontextmenu = open;
+    let t = null;
+    el.addEventListener('touchstart', e => { const x = e.touches[0]; t = setTimeout(() => { navigator.vibrate?.(15); openChannelMenu(el.dataset.ch, x.clientX, x.clientY); }, 480); }, { passive: true });
+    ['touchmove', 'touchend', 'touchcancel'].forEach(ev => el.addEventListener(ev, () => clearTimeout(t), { passive: true }));
+  });
   list.querySelectorAll('[data-delcat]').forEach(b => b.onclick = () => {
     const cat = cats.find(c => c.id === b.dataset.delcat);
     confirmModal(`Excluir a categoria "${cat.name}"?`, 'Os canais dela continuam existindo, só ficam sem categoria.', 'Excluir', async () => {
@@ -526,18 +687,22 @@ function renderDMs(head, list) {
   head.style.background = '';
   head.innerHTML = `<span class="name">Mensagens diretas</span><button class="icon-btn" id="dm-new" title="Nova conversa">${I.plus}</button>`;
   head.querySelector('#dm-new').onclick = findUserModal;
+  const nIn = S.friends.in.length;
+  const top = `<button class="side-btn ${S.view === 'friends' ? 'active' : ''}" id="dm-friends">${I.users}Amigos${nIn ? `<span class="badge">${nIn}</span>` : ''}</button>`;
   const dms = [...S.dms].sort((a, b) => (b.last?.ts || 0) - (a.last?.ts || 0));
   if (!dms.length) {
-    list.innerHTML = `<p class="muted" style="padding:10px">Nenhuma conversa ainda. Clique no + acima, ou no perfil de alguém e em "Enviar mensagem".</p>`;
+    list.innerHTML = top + `<p class="muted" style="padding:10px">Nenhuma conversa ainda. Adicione um amigo ou clique no perfil de alguém e em "Enviar mensagem".</p>`;
+    list.querySelector('#dm-friends').onclick = openFriends;
     return;
   }
-  list.innerHTML = `<div class="sec">Conversas</div>` + dms.map(d => {
+  list.innerHTML = top + `<div class="sec">Conversas</div>` + dms.map(d => {
     const cid = dmChannelId(d.user.id);
-    const prev = d.last ? (d.last.mine ? 'Você: ' : '') + (d.last.text || '📎 arquivo') : '';
+    const prev = d.inCall ? '📞 Em chamada' : d.last ? (d.last.mine ? 'Você: ' : '') + (d.last.text || '📎 arquivo') : '';
     return `<button class="dm-row ${S.dmPeer === d.user.id ? 'active' : ''} ${S.unread.has(cid) ? 'unread' : ''}" data-dm="${esc(d.user.id)}">
-      ${avatar(d.user, 'sm')}<span class="col"><span class="n">${esc(d.user.name)}</span>${prev ? `<span class="p">${esc(prev)}</span>` : ''}</span>
+      ${avatar(d.user, 'sm')}<span class="col"><span class="n">${esc(d.user.name)}</span>${prev ? `<span class="p ${d.inCall ? 'incall' : ''}">${esc(prev)}</span>` : ''}</span>
       <span class="icon-btn x" data-close-dm="${esc(d.user.id)}" title="Fechar conversa">${I.x}</span></button>`;
   }).join('');
+  list.querySelector('#dm-friends').onclick = openFriends;
   list.querySelectorAll('[data-dm]').forEach(b => b.onclick = () => openDM(b.dataset.dm));
   list.querySelectorAll('[data-close-dm]').forEach(b => b.onclick = async e => {
     e.stopPropagation();
@@ -548,6 +713,89 @@ function renderDMs(head, list) {
     renderAll();
   });
 }
+
+function openChannelMenu(cid, x, y) {
+  const f = findChannel(cid);
+  if (!f) return;
+  const g = f.g, canCh = can(g, 'manageChannels');
+  const cats = g.categories || [];
+  ctx.innerHTML = `<div class="vol-h">${f.c.type === 'voice' ? '🔊' : '#'} ${esc(f.c.name)}</div>
+    ${f.c.type === 'text' ? `<button class="item" data-a="open">${I.hash}Abrir canal</button>` : `<button class="item" data-a="join">${I.speaker}Entrar na sala</button>`}
+    ${canCh && cats.length ? `<div class="vol-h">Mover para categoria</div>
+      ${[{ id: '', name: 'Sem categoria' }, ...cats].map(c => `<button class="item" data-cat="${esc(c.id)}">${I.folder}${esc(c.name)}${(f.c.cat || '') === c.id ? '<span class="sub">✓</span>' : ''}</button>`).join('')}` : ''}
+    ${canCh ? `<div class="sep"></div><button class="item danger" data-a="del">${I.trash}Excluir canal</button>` : ''}`;
+  ctx.onclick = async e => {
+    const mv = e.target.closest('[data-cat]'), it = e.target.closest('[data-a]');
+    closeCtx();
+    if (mv) { const r = await emit('channel:move', { groupId: g.id, channelId: cid, cat: mv.dataset.cat || null }); if (r.error) toast(r.error); return; }
+    if (!it) return;
+    if (it.dataset.a === 'open') openTextChannel(cid);
+    if (it.dataset.a === 'join') joinCall(cid);
+    if (it.dataset.a === 'del') deleteChannelModal(cid);
+  };
+  placeCtx(x, y);
+}
+
+// ---------- Arrastar com o mouse: canais entre categorias, pessoas entre salas ----------
+(function wireDrag() {
+  const list = $('#channels');
+  let st = null, ghost = null, target = null;
+  const clear = () => {
+    ghost?.remove(); ghost = null;
+    st?.el.classList.remove('dragging');
+    target?.classList.remove('drop-ok');
+    target = null; st = null;
+  };
+  list.addEventListener('pointerdown', e => {
+    if (e.pointerType !== 'mouse' || e.button !== 0) return;
+    if (e.target.closest('.icon-btn')) return;
+    const g = curGroup(); if (!g) return;
+    const ch = e.target.closest('.ch[data-ch]'), vu = e.target.closest('.vuser[data-sid]');
+    if (ch && !can(g, 'manageChannels')) return;
+    if (vu && !can(g, 'moveMembers')) return;
+    if (!ch && !vu) return;
+    st = { el: ch || vu, kind: ch ? 'ch' : 'user', x: e.clientX, y: e.clientY, on: false };
+  });
+  window.addEventListener('pointermove', e => {
+    if (!st) return;
+    if (!st.on) {
+      if (Math.hypot(e.clientX - st.x, e.clientY - st.y) < 7) return;
+      st.on = true;
+      st.el.classList.add('dragging');
+      ghost = document.createElement('div');
+      ghost.className = 'drag-ghost';
+      ghost.textContent = st.el.querySelector('.label, .nm')?.textContent || '';
+      document.body.appendChild(ghost);
+    }
+    e.preventDefault();
+    ghost.style.left = (e.clientX + 12) + 'px';
+    ghost.style.top = (e.clientY + 12) + 'px';
+    const under = document.elementFromPoint(e.clientX, e.clientY);
+    const t = st.kind === 'ch'
+      ? under?.closest('.ch[data-ch], .sec[data-cat]')
+      : under?.closest('.ch[data-vid]');
+    if (t !== target) { target?.classList.remove('drop-ok'); target = t && t !== st.el ? t : null; target?.classList.add('drop-ok'); }
+  });
+  window.addEventListener('pointerup', async () => {
+    if (!st) return;
+    const { kind, el } = st, t = target, on = st.on;
+    clear();
+    if (!on || !t) return;
+    const g = curGroup(); if (!g) return;
+    if (kind === 'ch') {
+      const id = el.dataset.ch;
+      let cat = null, before = null;
+      if (t.classList.contains('sec')) cat = t.dataset.cat || null;
+      else { before = t.dataset.ch; cat = findChannel(before)?.c.cat || null; }
+      const r = await emit('channel:move', { groupId: g.id, channelId: id, cat, before });
+      if (r.error) toast(r.error);
+    } else {
+      const r = await emit('voice:force', { sid: el.dataset.sid, action: 'move', to: t.dataset.vid });
+      if (r.error) toast(r.error);
+    }
+  });
+  window.addEventListener('pointercancel', clear);
+})();
 
 function findUserModal() {
   modal(`<h3>Nova conversa</h3>
@@ -575,16 +823,28 @@ function findUserModal() {
 function renderHeader() {
   const t = $('#main-title'), a = $('#head-actions');
   a.innerHTML = '';
+  if (S.gid === '@me' && S.view === 'friends') { t.innerHTML = `<span class="dm-head">${I.users}<span>Amigos</span></span>`; return; }
   if (S.gid === '@me') {
     const u = S.dmPeer && userById(S.dmPeer);
-    t.innerHTML = u ? `<span class="dm-head">${avatar(u, 'sm')}<span>${esc(u.name)}</span></span>` : '<span>Mensagens diretas</span>';
+    const ringing = u && call.channelId === dmChannelId(u.id) && S.view === 'voice';
+    t.innerHTML = u ? `<span class="dm-head">${ringing ? I.phone : avatar(u, 'sm')}<span>${esc(u.name)}</span></span>` : '<span>Mensagens diretas</span>';
     $('#msg-input').disabled = !S.cid;
     $('#msg-input').placeholder = u ? `Conversar com ${u.name}` : 'Mensagem';
     if (u) {
-      const b = document.createElement('button');
-      b.className = 'icon-btn'; b.title = 'Ver perfil'; b.innerHTML = I.users;
-      b.onclick = () => openProfile(u.id);
-      a.appendChild(b);
+      const inCall = call.channelId === dmChannelId(u.id);
+      const mk = (title, html, fn, cls = '') => {
+        const b = document.createElement('button');
+        b.className = 'icon-btn ' + cls; b.title = title; b.innerHTML = html;
+        b.onclick = fn;
+        a.appendChild(b);
+      };
+      if (inCall && S.view === 'voice') mk('Voltar à conversa', I.hash, () => openDM(u.id));
+      else if (inCall) mk('Voltar à chamada', I.grid, () => setView('voice'), 'live-btn');
+      else {
+        mk('Ligação de voz', I.phone, () => startDmCall(u.id, false));
+        mk('Ligação de vídeo', I.cam, () => startDmCall(u.id, true));
+      }
+      mk('Ver perfil', I.users, () => openProfile(u.id));
     }
     return;
   }
@@ -601,6 +861,13 @@ function renderHeader() {
       b.onclick = () => setView('voice');
       a.appendChild(b);
     }
+  } else if (S.view === 'voice' && callIsDm()) {
+    const u = userById(dmOther(call.channelId));
+    t.innerHTML = `<span class="dm-head">${I.phone}<span>${esc(u?.name || 'Ligação')}</span></span>`;
+    const b = document.createElement('button');
+    b.className = 'icon-btn'; b.title = 'Voltar à conversa'; b.innerHTML = I.back;
+    b.onclick = () => openDM(dmOther(call.channelId));
+    a.appendChild(b);
   } else if (S.view === 'voice' && call.channelId) {
     const f = findChannel(call.channelId);
     t.innerHTML = `${I.speaker}<span>${esc(f?.c.name || 'Chamada')}</span>`;
@@ -658,9 +925,10 @@ function renderCallbar() {
   const bar = $('#callbar');
   if (!call.channelId) { bar.classList.add('hidden'); return; }
   const f = findChannel(call.channelId);
+  const dmU = callIsDm() ? userById(dmOther(call.channelId)) : null;
   bar.classList.remove('hidden');
-  bar.innerHTML = `<div class="st"><span class="dot"></span>Conectado na voz</div>
-    <div class="where">${esc(f?.c.name || '')} / ${esc(f?.g.name || '')}</div>
+  bar.innerHTML = `<div class="st"><span class="dot"></span>${dmU ? 'Em ligação' : 'Conectado na voz'}</div>
+    <div class="where">${dmU ? esc(dmU.name) : esc(f?.c.name || '') + ' / ' + esc(f?.g.name || '')}</div>
     <div class="acts">
       <button class="icon-btn ${call.micOn && call.micTrack ? '' : 'off'}" data-c="mic" title="Microfone">${call.micOn && call.micTrack ? I.mic : I.micOff}</button>
       <button class="icon-btn" data-c="view" title="Abrir chamada">${I.grid}</button>
@@ -736,7 +1004,7 @@ function renderMessages(mode) {
 // ---------- Menu da mensagem: reagir, responder, editar, copiar, excluir ----------
 const curMsg = id => (S.msgs[S.cid] || []).find(m => m.id === id);
 const ctx = $('#ctx');
-function closeCtx() { ctx.classList.add('hidden'); ctx.innerHTML = ''; }
+function closeCtx() { ctx.classList.add('hidden'); ctx.innerHTML = ''; ctx.oninput = null; }
 function placeCtx(x, y) {
   ctx.classList.remove('hidden');
   const r = ctx.getBoundingClientRect();
@@ -1155,11 +1423,16 @@ const call = {
   res: store.get('nexo_res') || '1080p',
   fps: Number(store.get('nexo_fps')) || 30,
   audioCtx: null, meters: new Map(), meterTimer: null,
+  fmute: false, rejoin: null, keep: null, hadPeer: false,
+  recvH: Number(store.get('nexo_recvh')) || 0,   // resolução que EU recebo (0 = automática)
+  recvOverride: new Map(),                      // por pessoa, quando eu mudo só para uma
+
+  vol: (() => { try { return JSON.parse(store.get('nexo_vol') || '{}'); } catch { return {}; } })(),
   pinned: null, wakeLock: null, joining: false,
 };
 const hasMedia = () => !!navigator.mediaDevices?.getUserMedia;
 const NATIVE = window.NexoNative || null;   // existe quando roda dentro do app Android (APK)
-const APK_LATEST = 2;                         // aumente quando publicar um APK novo
+const APK_LATEST = 4;                         // aumente quando publicar um APK novo
 const IS_ANDROID = /Android/i.test(navigator.userAgent);
 const canShareScreen = () => !!NATIVE || !!navigator.mediaDevices?.getDisplayMedia;
 const localTracks = () => [call.micTrack, call.camTrack, call.screenTrack, call.screenAudioTrack];
@@ -1190,6 +1463,7 @@ async function joinCall(cid) {
   call.channelId = cid;
   call.groupId = findChannel(cid)?.g.id;
   call.mySid = r.sid;
+  call.fmute = false;
   call.pinned = null;
   $('#tiles').innerHTML = '';
   renderLocalTiles();
@@ -1197,7 +1471,13 @@ async function joinCall(cid) {
   if (call.micTrack) attachMeter('me', call.micTrack);
   startMeterLoop();
   requestWakeLock();
+  startKeepAlive();
   try { NATIVE?.setInCall(true); } catch {}
+  if (r.dupe) {
+    call.micOn = false;
+    if (call.micTrack) call.micTrack.enabled = false;
+    toast('Você já está nesta sala em outro aparelho. O microfone deste aqui entrou desligado, para não dar eco.', 7000);
+  }
   setView('voice');
   renderControls();
   renderCallbar();
@@ -1206,8 +1486,44 @@ async function joinCall(cid) {
   for (const p of r.peers) startAsCaller(addPeer(p));
 }
 
+// Volta para a chamada depois de uma queda de internet (comum no celular)
+async function rejoinCall() {
+  const cid = call.rejoin;
+  call.rejoin = null;
+  if (!cid || !call.channelId) return;
+  const r = await emit('voice:join', { channelId: cid });
+  if (r.error) { toast('Não consegui voltar para a chamada: ' + r.error); leaveCall(); return; }
+  call.mySid = r.sid;
+  sendState();
+  renderTiles(); renderCallbar(); renderChannels();
+  for (const p of r.peers) startAsCaller(addPeer(p));
+  toast('De volta à chamada.');
+}
+
+// Som inaudível que evita o celular "congelar" o app em segundo plano
+function startKeepAlive() {
+  stopKeepAlive();
+  try {
+    ensureAudioCtx();
+    const ctx = call.audioCtx; if (!ctx) return;
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.frequency.value = 30;
+    g.gain.value = 0.0005;
+    o.connect(g).connect(ctx.destination);
+    o.start();
+    call.keep = { o, g };
+  } catch {}
+}
+function stopKeepAlive() {
+  try { call.keep?.o.stop(); call.keep?.g.disconnect(); } catch {}
+  call.keep = null;
+}
+
 function leaveCall() {
   if (!call.channelId) return;
+  call.rejoin = null;
+  call.fmute = false;
+  stopKeepAlive();
   S.socket?.emit('voice:leave');
   endNativeCapture();
   try { NATIVE?.setInCall(false); } catch {}
@@ -1215,7 +1531,8 @@ function leaveCall() {
   stopLocalTracks();
   call.meters.clear();
   clearInterval(call.meterTimer); call.meterTimer = null;
-  call.channelId = null; call.groupId = null; call.pinned = null;
+  call.channelId = null; call.groupId = null; call.pinned = null; call.hadPeer = false;
+  call.recvOverride.clear();
   $('#tiles').innerHTML = '';
   try { call.wakeLock?.release(); } catch {}
   call.wakeLock = null;
@@ -1241,15 +1558,56 @@ function addPeer(p) {
   if (peer) return peer;
   peer = {
     sid: p.sid, userId: p.userId, username: p.username, color: p.color,
-    state: { mic: !!p.mic, cam: !!p.cam, screen: !!p.screen },
+    state: { mic: !!p.mic, cam: !!p.cam, screen: !!p.screen, fmute: !!p.fmute },
     chain: Promise.resolve(), caller: false,
     camStream: new MediaStream(), screenStream: new MediaStream(),
-    micAudio: makeAudioEl(), screenAudio: makeAudioEl(),
+    wantH: 0,   // resolução que ESTE espectador me pediu (quando eu transmito)
+    micAudio: makeAudioEl(), screenAudio: makeAudioEl(), micGain: null, screenGain: null,
   };
   peer.pc = createPC(peer);
   call.peers.set(p.sid, peer);
   renderPeerTiles(peer);
   return peer;
+}
+
+// ---------- Volume de cada pessoa (vale só para quem ajusta) ----------
+const volOf = uid => ({ mic: 100, screen: 100, ...(call.vol[uid] || {}) });
+function setVolume(uid, kind, v) {
+  const cur = volOf(uid);
+  cur[kind] = Math.max(0, Math.min(200, Math.round(v)));
+  call.vol[uid] = cur;
+  try { store.set('nexo_vol', JSON.stringify(call.vol)); } catch {}
+  for (const p of call.peers.values()) if (p.userId === uid) applyVolume(p);
+}
+function applyVolume(peer) {
+  // não tocamos o nosso próprio áudio (outro aparelho na mesma conta) para não dar eco
+  const mine = peer.userId === S.user?.id;
+  const v = volOf(peer.userId);
+  applyOne(peer, 'mic', mine ? 0 : v.mic);
+  applyOne(peer, 'screen', v.screen);
+}
+function applyOne(peer, kind, v) {
+  const el = kind === 'mic' ? peer.micAudio : peer.screenAudio;
+  const key = kind + 'Gain';
+  if (!el) return;
+  if (v > 100 && el.srcObject && call.audioCtx) {
+    // acima de 100% precisamos amplificar pelo WebAudio
+    try {
+      if (!peer[key] || peer[key].stream !== el.srcObject) {
+        try { peer[key]?.src.disconnect(); peer[key]?.g.disconnect(); } catch {}
+        const src = call.audioCtx.createMediaStreamSource(el.srcObject);
+        const g = call.audioCtx.createGain();
+        src.connect(g).connect(call.audioCtx.destination);
+        peer[key] = { src, g, stream: el.srcObject };
+      }
+      peer[key].g.gain.value = v / 100;
+      el.muted = true;
+      return;
+    } catch (e) { console.warn('gain', e); }
+  }
+  if (peer[key]) { try { peer[key].src.disconnect(); peer[key].g.disconnect(); } catch {} peer[key] = null; }
+  el.muted = false;
+  el.volume = Math.max(0, Math.min(100, v)) / 100;
 }
 
 function makeAudioEl() {
@@ -1264,6 +1622,7 @@ function removePeer(sid) {
   const peer = call.peers.get(sid);
   if (!peer) return;
   try { peer.pc.close(); } catch {}
+  try { peer.micGain?.src.disconnect(); peer.screenGain?.src.disconnect(); } catch {}
   peer.micAudio.srcObject = null; peer.micAudio.remove();
   peer.screenAudio.srcObject = null; peer.screenAudio.remove();
   call.peers.delete(sid);
@@ -1282,6 +1641,7 @@ function createPC(peer) {
     const t = e.track;
     if (idx === 0) {
       peer.micAudio.srcObject = new MediaStream([t]);
+      applyVolume(peer);
       playSafe(peer.micAudio);
       attachMeter(peer.sid, t);
     } else if (idx === 1) {
@@ -1290,13 +1650,14 @@ function createPC(peer) {
       swapTrack(peer.screenStream, t);
     } else if (idx === 3) {
       peer.screenAudio.srcObject = new MediaStream([t]);
+      applyVolume(peer);
       playSafe(peer.screenAudio);
     }
     renderPeerTiles(peer);
   };
   pc.onconnectionstatechange = () => {
     const st = pc.connectionState;
-    if (st === 'connected') tunePeerSenders(peer);
+    if (st === 'connected') { tunePeerSenders(peer); requestQuality(peer); }
     if (st === 'failed' && peer.caller) { try { pc.restartIce(); } catch {} }
     const tile = document.getElementById('t-cam-' + peer.sid);
     if (tile) {
@@ -1361,8 +1722,9 @@ function onPeerState(p) {
   const peer = call.peers.get(p.sid);
   if (!peer) return;
   const wasScreen = peer.state.screen;
-  peer.state = { mic: !!p.mic, cam: !!p.cam, screen: !!p.screen };
+  peer.state = { mic: !!p.mic, cam: !!p.cam, screen: !!p.screen, fmute: !!p.fmute };
   renderPeerTiles(peer);
+  if (!wasScreen && peer.state.screen) requestQuality(peer);
   // Fixa automaticamente quem comecou a transmitir a tela
   if (!wasScreen && peer.state.screen && !call.pinned) { call.pinned = 't-scr-' + peer.sid; layoutTiles(); }
 }
@@ -1376,14 +1738,14 @@ function setTrackForAll(idx, track) {
 }
 
 // Ajusta bitrate/fps para a tela ficar nitida em Full HD
-async function tuneSender(sender, maxBitrate, maxFramerate, pref) {
+async function tuneSender(sender, maxBitrate, maxFramerate, pref, scale = 1) {
   if (!sender) return;
   try {
     const p = sender.getParameters();
     if (!p.encodings || !p.encodings.length) p.encodings = [{}];
     p.encodings[0].maxBitrate = maxBitrate;
     if (maxFramerate) p.encodings[0].maxFramerate = maxFramerate;
-    p.encodings[0].scaleResolutionDownBy = 1;
+    p.encodings[0].scaleResolutionDownBy = Math.max(1, scale);
     await sender.setParameters(p);
   } catch (e) { console.warn('setParameters', e); }
   if (pref) {
@@ -1394,12 +1756,33 @@ function tunePeerSenders(peer) {
   const txs = peer.pc.getTransceivers();
   const q = curQ();
   tuneSender(txs[1]?.sender, 1_500_000, 30, 'balanced');
-  tuneSender(txs[2]?.sender, q.br, q.fps, q.fps >= 60 ? 'maintain-framerate' : 'maintain-resolution');
+  // Se esse espectador pediu uma resolução menor, só a conexão com ele é reduzida
+  const srcH = call.screenTrack?.getSettings?.().height || q.h;
+  const scale = peer.wantH && srcH > peer.wantH ? Math.min(8, srcH / peer.wantH) : 1;
+  const br = Math.max(300_000, Math.round(q.br / (scale * scale)));
+  tuneSender(txs[2]?.sender, br, q.fps, q.fps >= 60 ? 'maintain-framerate' : 'maintain-resolution', scale);
+}
+
+// ---------- Resolução que EU recebo de cada transmissão ----------
+const RECV = [[0, 'Automática (a melhor)'], [1080, '1080p'], [720, '720p'], [480, '480p'], [360, '360p (economizar dados)']];
+const recvOf = uid => call.recvOverride.has(uid) ? call.recvOverride.get(uid) : call.recvH;
+function requestQuality(peer) {
+  if (!peer || !S.socket?.connected) return;
+  S.socket.emit('voice:quality', { to: peer.sid, maxH: recvOf(peer.userId) });
+}
+function setRecvQuality(h, uid) {
+  if (uid) call.recvOverride.set(uid, h);
+  else { call.recvH = h; call.recvOverride.clear(); store.set('nexo_recvh', String(h)); }
+  for (const p of call.peers.values()) if (!uid || p.userId === uid) requestQuality(p);
+  const label = RECV.find(r => r[0] === h)?.[1] || 'Automática';
+  toast('Você vai receber em: ' + label);
+  renderControls();
 }
 
 // ---------- Controles ----------
 async function toggleMic() {
   if (!call.channelId) return;
+  if (call.fmute && !call.micOn) return toast('Um moderador silenciou o seu microfone nesta sala.');
   if (!call.micTrack) {
     try {
       const s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
@@ -1424,7 +1807,7 @@ async function getCamera() {
 }
 
 async function toggleCam() {
-  if (!call.camTrack && !can(group(call.groupId), 'video')) return toast('Você não tem permissão para usar vídeo neste grupo.');
+  if (!call.camTrack && !callIsDm() && !can(group(call.groupId), 'video')) return toast('Você não tem permissão para usar vídeo neste grupo.');
   if (call.camTrack) {
     call.camTrack.stop();
     call.camTrack = null;
@@ -1458,7 +1841,7 @@ async function flipCamera() {
 
 async function toggleScreen() {
   if (call.screenTrack) return stopScreen();
-  if (!can(group(call.groupId), 'video')) return toast('Você não tem permissão para transmitir a tela neste grupo.');
+  if (!callIsDm() && !can(group(call.groupId), 'video')) return toast('Você não tem permissão para transmitir a tela neste grupo.');
   if (NATIVE) return startNativeScreen();
   if (!canShareScreen()) {
     if (IS_ANDROID) apkModal('Para transmitir a tela do celular, instale o app Nexo para Android. O navegador não permite capturar a tela.');
@@ -1580,21 +1963,27 @@ async function changeQuality(kind, v) {
 function renderControls() {
   const c = $('#controls');
   const micOn = !!call.micTrack && call.micOn;
+  const fm = call.fmute;
   const scrOk = canShareScreen();
   c.innerHTML = `
-    <button class="cbtn ${micOn ? '' : 'off'}" data-k="mic" title="${micOn ? 'Silenciar' : 'Ativar microfone'}">${micOn ? I.mic : I.micOff}</button>
+    <button class="cbtn ${micOn ? '' : 'off'}" data-k="mic" title="${fm && !micOn ? 'Silenciado por um moderador' : micOn ? 'Silenciar' : 'Ativar microfone'}">${micOn ? I.mic : I.micOff}</button>
     <button class="cbtn ${call.camTrack ? 'on' : ''}" data-k="cam" title="${call.camTrack ? 'Desligar câmera' : 'Ligar câmera'}">${call.camTrack ? I.cam : I.camOff}</button>
     ${call.camTrack && isMobile() ? `<button class="cbtn" data-k="flip" title="Trocar câmera">${I.flip}</button>` : ''}
     <button class="cbtn ${call.screenTrack ? 'on' : ''}" data-k="screen" title="${scrOk ? (call.screenTrack ? 'Parar transmissão' : 'Transmitir tela') : 'Transmissão de tela disponível só no PC'}" ${scrOk ? '' : 'style="opacity:.45"'}>${call.screenTrack ? I.screenOff : I.screen}</button>
     ${scrOk ? `<select class="quality" data-q="res" title="Resolução da transmissão">${Object.keys(RES).map(k => `<option value="${k}" ${k === call.res ? 'selected' : ''}>${k}</option>`).join('')}</select>
     <select class="quality" data-q="fps" title="Quadros por segundo da transmissão">${[60, 30, 15].map(k => `<option value="${k}" ${k === call.fps ? 'selected' : ''}>${k} fps</option>`).join('')}</select>` : ''}
+    ${[...call.peers.values()].some(p => p.state.screen) ? `<select class="quality" data-q="recv" title="Resolução que você recebe das transmissões (vale só para você)">${RECV.map(([h, label]) => `<option value="${h}" ${h === call.recvH ? 'selected' : ''}>${h ? 'Receber ' + label : 'Receber: automática'}</option>`).join('')}</select>` : ''}
     <button class="cbtn leave" data-k="leave" title="Sair da chamada">${I.phoneOff}</button>`;
   c.querySelector('[data-k=mic]').onclick = toggleMic;
   c.querySelector('[data-k=cam]').onclick = toggleCam;
   c.querySelector('[data-k=screen]').onclick = toggleScreen;
   c.querySelector('[data-k=leave]').onclick = () => leaveCall();
   c.querySelector('[data-k=flip]')?.addEventListener('click', flipCamera);
-  c.querySelectorAll('.quality').forEach(el => el.addEventListener('change', e => changeQuality(el.dataset.q, e.target.value)));
+  c.querySelectorAll('.quality').forEach(el => el.addEventListener('change', e => {
+    el.blur();
+    if (el.dataset.q === 'recv') setRecvQuality(Number(e.target.value));
+    else changeQuality(el.dataset.q, e.target.value);
+  }));
 }
 
 // ---------- Blocos de video ----------
@@ -1604,25 +1993,35 @@ function ensureTile(id, who, isScreen) {
   t = document.createElement('div');
   t.id = id;
   t.className = 'tile' + (isScreen ? ' screen' : '');
-  t.innerHTML = `<video autoplay playsinline muted></video><div class="ph">${avatar(who)}</div>
-    <div class="tag"><span></span></div><button class="icon-btn fs" title="Tela cheia">${I.expand}</button>`;
+  t.innerHTML = `<video autoplay playsinline muted></video><div class="ph">${avatar(who, 'nodot')}</div>
+    <div class="tag"><span></span></div><button class="icon-btn fs" title="Tela cheia">${I.expand}</button>
+    <button class="icon-btn menu hidden" title="Opções">${I.more}</button>`;
   t.onclick = e => {
     if (e.target.closest('.fs')) return;
     call.pinned = call.pinned === id ? null : id;
     layoutTiles();
   };
   t.querySelector('.fs').onclick = e => { e.stopPropagation(); goFullscreen(t); };
+  t.querySelector('.menu').onclick = e => {
+    e.stopPropagation();
+    const r = e.currentTarget.getBoundingClientRect();
+    if (t._peer) openPeerMenu(t._peer, t.classList.contains('screen'), r.right - 280, r.bottom + 6);
+  };
   $('#tiles').appendChild(t);
   return t;
 }
 
-function setTile(t, { stream, showVideo, label, micOff, mirror }) {
+function setTile(t, { stream, showVideo, label, micOff, mirror, vol, peer, screen }) {
   const v = t.querySelector('video');
   if (v.srcObject !== stream) v.srcObject = stream;
   v.style.visibility = showVideo ? 'visible' : 'hidden';
   v.classList.toggle('mirror', !!mirror);
   t.querySelector('.ph').style.display = showVideo ? 'none' : 'flex';
-  t.querySelector('.tag').innerHTML = `${micOff ? I.micOff : ''}<span>${esc(label)}</span>`;
+  t._peer = peer || null;
+  t.querySelector('.menu').classList.toggle('hidden', !peer);
+  t.classList.toggle('muted-me', vol === 0);
+  const volTag = peer && vol !== 100 && vol !== undefined ? `<small style="color:var(--mut)">${vol}%</small>` : '';
+  t.querySelector('.tag').innerHTML = `${micOff ? I.micOff : ''}<span>${esc(label)}</span>${volTag}`;
   if (showVideo) v.play().catch(() => {});
   // Mostra a resolucao real recebida (ex.: 1920x1080)
   if (t.classList.contains('screen')) {
@@ -1643,37 +2042,115 @@ function localCamStream() {
   if (!_localCam || _localCam.getVideoTracks()[0] !== call.camTrack) _localCam = new MediaStream([call.camTrack]);
   return _localCam;
 }
-function renderLocalTiles() {
-  if (!call.channelId) return;
-  const me = { id: S.user.id, username: S.user.username, color: S.user.color };
-  const cam = ensureTile('t-cam-me', me, false);
-  setTile(cam, {
-    stream: localCamStream(),
-    showVideo: !!call.camTrack, label: S.user.username + ' (você)',
-    micOff: !(call.micTrack && call.micOn), mirror: call.facing === 'user',
-  });
-  if (call.screenTrack) {
-    const scr = ensureTile('t-scr-me', me, true);
-    if (scr.querySelector('video').srcObject?.getVideoTracks()[0] !== call.screenTrack)
-      setTile(scr, { stream: new MediaStream([call.screenTrack]), showVideo: true, label: 'Sua tela (ao vivo)' });
-  } else {
-    document.getElementById('t-scr-me')?.remove();
-  }
-  layoutTiles();
+let _localCam2 = null;
+function localCamStream2() {
+  if (!call.camTrack) { _localCam2 = null; return null; }
+  if (!_localCam2 || _localCam2.getVideoTracks()[0] !== call.camTrack) _localCam2 = new MediaStream([call.camTrack]);
+  return _localCam2;
 }
 
-function renderPeerTiles(peer) {
+// Desenha todos os quadrinhos da chamada.
+// Uma pessoa = um quadro de perfil, mesmo com vários aparelhos;
+// cada transmissão de tela ganha o seu próprio quadro.
+function renderTiles() {
   if (!call.channelId) return;
-  const cam = ensureTile('t-cam-' + peer.sid, peer, false);
-  setTile(cam, { stream: peer.camStream, showVideo: peer.state.cam && peer.camStream.getVideoTracks().length > 0, label: peer.username, micOff: !peer.state.mic });
-  if (peer.state.screen) {
-    const scr = ensureTile('t-scr-' + peer.sid, peer, true);
-    setTile(scr, { stream: peer.screenStream, showVideo: peer.screenStream.getVideoTracks().length > 0, label: `Tela de ${peer.username}` });
-  } else {
-    document.getElementById('t-scr-' + peer.sid)?.remove();
-    if (call.pinned === 't-scr-' + peer.sid) call.pinned = null;
+  const keep = new Set(['t-cam-me']);
+  const me = { id: S.user.id, name: S.user.name, username: S.user.username, color: S.user.color };
+  setTile(ensureTile('t-cam-me', me, false), {
+    stream: localCamStream2(), showVideo: !!call.camTrack,
+    label: S.user.name + ' (você)', micOff: !(call.micTrack && call.micOn), mirror: call.facing === 'user',
+  });
+  if (call.screenTrack) {
+    keep.add('t-scr-me');
+    const t = ensureTile('t-scr-me', me, true);
+    if (t.querySelector('video').srcObject?.getVideoTracks()[0] !== call.screenTrack)
+      setTile(t, { stream: new MediaStream([call.screenTrack]), showVideo: true, label: 'Sua tela (ao vivo)' });
   }
+  const byUser = new Map();
+  for (const p of call.peers.values()) (byUser.get(p.userId) || byUser.set(p.userId, []).get(p.userId)).push(p);
+  for (const [uid, list] of byUser) {
+    const mine = uid === S.user.id;                       // outro aparelho meu
+    const primary = list.find(p => p.state.cam) || list.find(p => p.state.mic) || list[0];
+    if (!mine) {
+      const id = 't-cam-' + primary.sid;
+      keep.add(id);
+      const v = volOf(uid);
+      setTile(ensureTile(id, primary, false), {
+        stream: primary.camStream,
+        showVideo: primary.state.cam && primary.camStream.getVideoTracks().length > 0,
+        label: nameOf(uid, primary.username) + (list.length > 1 ? ` (${list.length} aparelhos)` : ''),
+        micOff: !primary.state.mic, vol: v.mic, peer: primary,
+      });
+    }
+    let n = 0;
+    for (const p of list) {
+      if (!p.state.screen) { document.getElementById('t-scr-' + p.sid)?.remove(); continue; }
+      n++;
+      const id = 't-scr-' + p.sid;
+      keep.add(id);
+      const extra = list.filter(x => x.state.screen).length > 1 ? ` (${n})` : '';
+      setTile(ensureTile(id, p, true), {
+        stream: p.screenStream, showVideo: p.screenStream.getVideoTracks().length > 0,
+        label: (mine ? 'Sua tela' : 'Tela de ' + nameOf(uid, p.username)) + extra,
+        vol: volOf(uid).screen, peer: p, screen: true,
+      });
+    }
+  }
+  for (const t of [...$('#tiles').children]) if (!keep.has(t.id)) t.remove();
   layoutTiles();
+}
+const renderLocalTiles = renderTiles;
+const renderPeerTiles = () => renderTiles();
+
+// Menu de uma pessoa na chamada: volume (só para mim) e moderação
+function openPeerMenu(peer, isScreen, x, y) {
+  const g = group(call.groupId);
+  const uid = peer.userId;
+  const v = volOf(uid);
+  const mine = uid === S.user?.id;
+  const canMute = g && can(g, 'muteMembers'), canMove = g && can(g, 'moveMembers'), canKick = g && can(g, 'disconnectMembers');
+  const higher = g && !mine && (uid === g.ownerId || rankOf(g, S.user.id) >= rankOf(g, uid));
+  const rooms = (g?.channels || []).filter(c => c.type === 'voice' && c.id !== call.channelId);
+  const slider = (kind, label, val) => `<div class="vol-h">${label}</div><div class="vol">${I.vol}
+    <input type="range" min="0" max="200" step="5" value="${val}" data-v="${kind}"><b data-vl="${kind}">${val}%</b></div>`;
+  ctx.innerHTML = `<div class="me-card">${avatar(peer, 'sm')}<span class="col"><b>${esc(nameOf(uid, peer.username))}</b><span>${mine ? 'você, em outro aparelho' : '@' + esc(userById(uid)?.username || '')}</span></span></div>
+    ${mine ? '' : slider('mic', 'Volume da voz', v.mic)}
+    ${peer.state.screen ? slider('screen', 'Volume da transmissão', v.screen) : ''}
+    ${mine ? '' : `<button class="item" data-a="mute0">${v.mic === 0 ? I.vol : I.volOff}${v.mic === 0 ? 'Ouvir de novo' : 'Silenciar para mim'}</button>`}
+    <button class="item" data-a="profile">${I.users}Ver perfil</button>
+    ${!higher && (canMute || canKick || canMove) ? '<div class="sep"></div>' : ''}
+    ${!higher && canMute ? `<button class="item" data-a="${peer.state.fmute ? 'unmute' : 'fmute'}">${peer.state.fmute ? I.mic : I.micOff}${peer.state.fmute ? 'Tirar o silêncio' : 'Silenciar para todos'}</button>` : ''}
+    ${!higher && canKick ? `<button class="item danger" data-a="kick">${I.phoneOff}Desconectar da chamada</button>` : ''}
+    ${peer.state.screen ? `<div class="vol-h">Qualidade que eu recebo</div>` + RECV.map(([h, label]) => `<button class="item" data-rq="${h}">${h === recvOf(uid) ? '✓' : '<i style="width:10px"></i>'} ${label}</button>`).join('') : ''}
+    ${!higher && canMove && rooms.length ? `<div class="vol-h">Mover para</div>` + rooms.map(c => `<button class="item" data-move="${esc(c.id)}">${I.speaker}${esc(c.name)}</button>`).join('') : ''}`;
+  ctx.oninput = e => {
+    const r = e.target.closest('[data-v]');
+    if (!r) return;
+    const kind = r.dataset.v;
+    setVolume(uid, kind, r.value);
+    const lab = ctx.querySelector(`[data-vl="${kind}"]`);
+    if (lab) lab.textContent = r.value + '%';
+    renderTiles();
+  };
+  ctx.onclick = async e => {
+    const rq = e.target.closest('[data-rq]');
+    if (rq) { closeCtx(); setRecvQuality(Number(rq.dataset.rq), uid); return; }
+    const mv = e.target.closest('[data-move]'), it = e.target.closest('[data-a]');
+    if (mv) { closeCtx(); const r = await emit('voice:force', { sid: peer.sid, action: 'move', to: mv.dataset.move }); if (r.error) toast(r.error); return; }
+    if (!it) return;
+    const a = it.dataset.a;
+    if (a === 'mute0') {
+      setVolume(uid, 'mic', v.mic === 0 ? 100 : 0);
+      closeCtx(); renderTiles();
+      return;
+    }
+    closeCtx();
+    if (a === 'profile') return openProfile(uid);
+    const act = a === 'fmute' ? 'mute' : a === 'unmute' ? 'unmute' : 'disconnect';
+    const r = await emit('voice:force', { sid: peer.sid, action: act });
+    if (r.error) toast(r.error);
+  };
+  placeCtx(x, y);
 }
 
 function layoutTiles() {
@@ -1767,6 +2244,118 @@ document.addEventListener('visibilitychange', () => {
 window.addEventListener('beforeunload', () => { if (call.channelId) S.socket?.emit('voice:leave'); });
 
 // ---------------------------------------------------------------------
+// Botão de amizade no cartão de perfil
+// ---------------------------------------------------------------------
+function friendRel(uid) {
+  if (S.friends.friends.some(x => x.id === uid)) return 'friend';
+  if (S.friends.in.some(x => x.id === uid)) return 'in';
+  if (S.friends.out.some(x => x.id === uid)) return 'out';
+  return 'none';
+}
+function friendBtnHtml(uid) {
+  const rel = friendRel(uid);
+  if (rel === 'friend') return `<button class="btn" id="pf-fr" data-rel="friend" title="Desfazer amizade">${I.userCheck} Amigos</button>`;
+  if (rel === 'in') return `<button class="btn primary" id="pf-fr" data-rel="in">${I.userPlus} Aceitar pedido</button>`;
+  if (rel === 'out') return `<button class="btn" id="pf-fr" data-rel="out">Pedido enviado</button>`;
+  return `<button class="btn" id="pf-fr" data-rel="none" title="Adicionar amigo">${I.userPlus} Adicionar amigo</button>`;
+}
+function wireFriendBtn(card, uid) {
+  const b = card.querySelector('#pf-fr');
+  if (!b) return;
+  b.onclick = async () => {
+    const rel = b.dataset.rel;
+    const u = userById(uid);
+    let r;
+    if (rel === 'none') r = await emit('friend:add', { query: u?.username || uid });
+    else if (rel === 'in') r = await emit('friend:accept', { userId: uid });
+    else r = await emit('friend:remove', { userId: uid });
+    if (r.error) return toast(r.error);
+    if (r.msg) toast(r.msg);
+    else if (rel === 'in') toast('Agora vocês são amigos!');
+    else if (rel !== 'none') toast('Pronto.');
+    const n = card.querySelector('.acts');
+    if (n) { b.outerHTML = friendBtnHtml(uid); wireFriendBtn(card, uid); }
+  };
+}
+
+// ---------------------------------------------------------------------
+// Ligação privada (dentro da conversa)
+// ---------------------------------------------------------------------
+const ring = { timer: null, channelId: null, nodes: [] };
+
+async function startDmCall(peerId, withCam) {
+  const cid = dmChannelId(peerId);
+  if (call.channelId === cid) { setView('voice'); return; }
+  const who = nameOf(peerId, '');
+  await joinCall(cid);
+  if (call.channelId !== cid) return;
+  if (withCam && !call.camTrack) await toggleCam();
+  const alone = call.peers.size === 0;
+  toast(alone ? `Chamando ${who}…` : `Você entrou na ligação com ${who}.`);
+}
+
+// Toque de chamada (dois bipes a cada 2,5 s)
+function startRing() {
+  stopRingSound();
+  ensureAudioCtx();
+  const beep = () => {
+    const ctx = call.audioCtx;
+    if (!ctx) return;
+    [0, 0.4].forEach(off => {
+      const o = ctx.createOscillator(), g = ctx.createGain(), t0 = ctx.currentTime + off;
+      o.type = 'sine';
+      o.frequency.setValueAtTime(880, t0);
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.14, t0 + 0.03);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.32);
+      o.connect(g).connect(ctx.destination);
+      o.start(t0); o.stop(t0 + 0.36);
+      ring.nodes.push(o);
+    });
+  };
+  beep();
+  ring.timer = setInterval(beep, 2500);
+}
+function stopRingSound() {
+  clearInterval(ring.timer);
+  ring.timer = null;
+  ring.nodes.forEach(o => { try { o.stop(); } catch {} });
+  ring.nodes = [];
+}
+
+function showIncoming(channelId, from) {
+  cacheUser(from);
+  ring.channelId = channelId;
+  startRing();
+  try { navigator.vibrate?.([400, 300, 400, 300, 400]); } catch {}
+  modal(`<div class="ring-card">${avatar(from, 'xl')}
+      <h3>${esc(from.name)}</h3>
+      <p class="muted">está te ligando…</p>
+      <div class="ring-acts">
+        <button class="cbtn leave" id="rg-no" title="Recusar">${I.phoneOff}</button>
+        <button class="cbtn answer" id="rg-yes" title="Atender">${I.phone}</button>
+      </div>
+      <button class="btn" id="rg-cam">Atender com vídeo</button>
+    </div>`, card => {
+    const answer = async cam => { stopIncoming(); closeModal(); await startDmCall(from.id, cam); };
+    card.querySelector('#rg-yes').onclick = () => answer(false);
+    card.querySelector('#rg-cam').onclick = () => answer(true);
+    card.querySelector('#rg-no').onclick = () => { stopIncoming(); closeModal(); emit('dm:decline', { channelId }); };
+  });
+  // notificação do sistema, caso o app esteja em segundo plano
+  try {
+    if (document.visibilityState !== 'visible' && 'Notification' in window && Notification.permission === 'granted') {
+      const n = new Notification(`${from.name} está te ligando`, { body: 'Toque para atender', icon: '/icons/icon-192.png', tag: 'ring' });
+      n.onclick = () => { window.focus(); n.close(); };
+    }
+  } catch {}
+}
+function stopIncoming() {
+  stopRingSound();
+  ring.channelId = null;
+}
+
+// ---------------------------------------------------------------------
 // Menu do próprio usuário (clique no seu nome, embaixo à esquerda)
 // ---------------------------------------------------------------------
 const PRESENCE_LABEL = { online: 'Disponível', idle: 'Ausente', dnd: 'Não perturbar', invisible: 'Invisível' };
@@ -1829,10 +2418,11 @@ function openProfile(uid, fallback) {
       <div class="pf-h">Sobre mim</div><div class="pf-bio">${u.bio ? linkify(u.bio) : '<span class="muted">Nada por aqui ainda.</span>'}</div>
       ${since ? `<div class="pf-h">Membro desde</div><div>${since}</div>` : ''}
       <div class="pf-h">Situação</div><div>${PRESENCE_LABEL[presOf(u)] ? (presOf(u) === 'offline' ? '⚫ Offline' : '🟢 ' + PRESENCE_LABEL[presOf(u)]) : (on ? '🟢 Online' : '⚫ Offline')}</div></div>`}
-    <div class="acts">${me ? '<button class="btn primary" id="pf-edit">Editar perfil</button>' : (u.gone ? '' : '<button class="btn primary" id="pf-dm">Enviar mensagem</button>')}<button class="btn" data-close>Fechar</button></div>`,
+    <div class="acts">${me || u.gone ? '' : friendBtnHtml(uid)}${me ? '<button class="btn primary" id="pf-edit">Editar perfil</button>' : (u.gone ? '' : '<button class="btn primary" id="pf-dm">Enviar mensagem</button>')}<button class="btn" data-close>Fechar</button></div>`,
     card => {
       const b = card.querySelector('#pf-edit'); if (b) b.onclick = editProfile;
       const d = card.querySelector('#pf-dm'); if (d) d.onclick = () => { closeModal(); openDM(uid); };
+      wireFriendBtn(card, uid);
       wireProfileExtras(card);
     });
 }
@@ -1928,7 +2518,9 @@ async function installApp() {
     history.replaceState(null, '', location.pathname);
   }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  try { NATIVE?.ready?.(); } catch {}
   // Botao "voltar" do Android: fecha o que estiver aberto antes de minimizar o app
+  window.__nexoLeaveCall = () => { if (call.channelId) leaveCall(); };
   window.__nexoBack = () => {
     if (!$('#lightbox').classList.contains('hidden')) { $('#lightbox').classList.add('hidden'); return true; }
     if (!ctx.classList.contains('hidden')) { closeCtx(); return true; }
