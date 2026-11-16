@@ -1,0 +1,19 @@
+{
+  "name": "nexo",
+  "version": "1.0.0",
+  "description": "Nexo - chat em grupo, salas de voz, video chamada e transmissao de tela em Full HD",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "https": "HTTPS=1 node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "pg": "^8.13.1",
+    "selfsigned": "^2.4.1",
+    "socket.io": "^4.8.1"
+  }
+}

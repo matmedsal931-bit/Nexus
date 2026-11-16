@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#141519">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Nexo</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+  <!-- Login / cadastro -->
+  <div id="auth" class="auth hidden">
+    <form class="auth-card" id="auth-form" autocomplete="on">
+      <img src="/icons/icon-192.png" alt="" class="auth-logo">
+      <h1>Nexo</h1>
+      <p class="muted" id="auth-sub">Entre para conversar com seus grupos</p>
+      <div class="tabs">
+        <button type="button" class="tab active" data-mode="login">Entrar</button>
+        <button type="button" class="tab" data-mode="register">Criar conta</button>
+      </div>
+      <label>Nome de usuário
+        <input id="auth-user" name="username" autocomplete="username" maxlength="24" required>
+      </label>
+      <label>Senha
+        <input id="auth-pass" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <div class="error" id="auth-error"></div>
+      <button class="btn primary big" id="auth-submit" type="submit">Entrar</button>
+    </form>
+  </div>
+
+  <!-- App -->
+  <div id="app" class="app hidden">
+    <div class="nav" id="nav">
+      <nav class="rail" id="rail"></nav>
+      <aside class="sidebar">
+        <header class="side-head" id="side-head"></header>
+        <div class="channels" id="channels"></div>
+        <div class="callbar hidden" id="callbar"></div>
+        <div class="userbar" id="userbar"></div>
+      </aside>
+    </div>
+    <div class="backdrop" id="backdrop"></div>
+
+    <main class="main">
+      <header class="main-head">
+        <button class="icon-btn menu-btn" id="menu-btn" aria-label="Menu"></button>
+        <div class="main-title" id="main-title"></div>
+        <div class="head-actions" id="head-actions"></div>
+      </header>
+
+      <section id="empty-view" class="empty-view hidden">
+        <div class="empty-card">
+          <h2>Bem-vindo ao Nexo! 👋</h2>
+          <p class="muted">Crie um grupo para seus amigos ou entre em um com um código de convite.</p>
+          <div class="row">
+            <button class="btn primary" data-action="create-group">Criar grupo</button>
+            <button class="btn" data-action="join-group">Entrar com convite</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="chat-view" class="chat-view hidden">
+        <div class="messages" id="messages"></div>
+        <form class="composer" id="composer">
+          <textarea id="msg-input" rows="1" maxlength="2000" placeholder="Mensagem" enterkeyhint="send"></textarea>
+          <button class="send-btn" type="submit" aria-label="Enviar" id="send-btn"></button>
+        </form>
+      </section>
+
+      <section id="voice-view" class="voice-view hidden">
+        <div class="tiles" id="tiles"></div>
+        <div class="controls" id="controls"></div>
+      </section>
+    </main>
+  </div>
+
+  <div id="modal" class="modal hidden"><div class="modal-card" id="modal-card"></div></div>
+  <div id="toasts" class="toasts"></div>
+  <div id="audio-sink" class="audio-sink"></div>
+  <button id="unlock-audio" class="unlock hidden">🔊 Toque aqui para ativar o áudio</button>
+
+  <script src="/socket.io/socket.io.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
