@@ -7,6 +7,11 @@ App de grupos estilo Discord, para **PC e celular**:
 - **Canais de texto** com chat em tempo real e histórico salvo
 - **Salas de voz** com **chamada de vídeo** (câmera frontal/traseira no celular)
 - **Transmissão de tela em Full HD** (1080p 30fps ou 60fps, com áudio do PC)
+- **Amigos:** pedido por nome de usuário ou por ID, pendentes, aceitar/recusar, lista com quem está online
+- **Na chamada:** volume de cada pessoa separado (voz e transmissão, até 200%), e **cada um escolhe a resolução que recebe** da live sem mexer na dos outros
+- **Moderação de voz:** silenciar para todos, desconectar da chamada e mover de sala — por cargo ou como administrador
+- **Vários aparelhos na mesma conta** na mesma chamada: aparece um perfil só, mas dá para transmitir a tela dos dois ao mesmo tempo
+- **Arrastar:** mover canais entre categorias e mover pessoas entre salas de voz (só com permissão)
 - **Mensagens diretas** (conversa privada), com lista de conversas e busca de pessoas
 - **Enviar fotos e arquivos** (até 8 MB): arraste, cole ou use o botão +; imagens aparecem na conversa
 - **Perfil:** nome exibido editável separado do @login, foto, cores, "sobre mim" e status (Disponível, Ausente, Não perturbar, Invisível)
@@ -18,10 +23,11 @@ App de grupos estilo Discord, para **PC e celular**:
 - Instalável como aplicativo (PWA) no PC e no celular, com botão "Instalar" dentro do app
 
 ## 🤖 App para Android (APK)
-O arquivo `public/nexo.apk` é o app Android (versão 1.1). Depois de publicar, ele fica disponível em
+O arquivo `public/nexo.apk` é o app Android (versão 1.2). Depois de publicar, ele fica disponível em
 `https://SEU-LINK.onrender.com/nexo.apk`. Abra esse endereço no celular, baixe e instale
 (o Android pede para permitir a instalação de "fontes desconhecidas").
 
+- A chamada **não cai** quando você sai do app ou apaga a tela: aparece uma notificação enquanto estiver conectado.
 - O app permite **transmitir a tela do celular** (o navegador não permite).
 - O app carrega o site, então **atualiza sozinho** a cada abertura. Só é preciso baixar um
   APK novo quando a parte nativa mudar; nesse caso o próprio app avisa.

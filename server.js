@@ -21,7 +21,7 @@ const MAX_MSGS_PER_CHANNEL = 1000;
 //   - Com DATABASE_URL (PostgreSQL, ex.: Neon gratuito): salva no banco,
 //     assim nada se perde quando o servidor na nuvem reinicia.
 // ------------------------------------------------------------------
-let db = { users: {}, tokens: {}, groups: {}, messages: {}, dms: {}, files: {} };
+let db = { users: {}, tokens: {}, groups: {}, messages: {}, dms: {}, files: {}, friends: {}, freq: {} };
 let pgPool = null;
 
 async function loadDb() {
@@ -129,7 +129,8 @@ const memberView = u => ({ ...publicUser(u), online: isOnline(u.id), presence: v
 // Cargos e permissoes
 // ------------------------------------------------------------------
 const PERMS = ['admin', 'manageGroup', 'manageChannels', 'manageRoles', 'manageEmoji', 'kick', 'ban',
-  'manageMessages', 'viewAudit', 'sendMessages', 'addReactions', 'connect', 'video'];
+  'manageMessages', 'viewAudit', 'muteMembers', 'moveMembers', 'disconnectMembers',
+  'sendMessages', 'addReactions', 'connect', 'video'];
 const DEFAULT_EVERYONE = { sendMessages: true, addReactions: true, connect: true, video: true };
 
 // Garante que grupos antigos tenham os campos novos
@@ -330,6 +331,7 @@ function broadcastPresence(uid, exceptSocket) {
   const seen = new Set();
   for (const g of Object.values(db.groups)) if (g.members.includes(uid) && !seen.has(g.id)) { seen.add(g.id); (exceptSocket || io).to('g:' + g.id).emit('presence', data); }
   for (const other of db.dms[uid] || []) io.to('u:' + other).emit('presence', data);
+  for (const other of db.friends[uid] || []) io.to('u:' + other).emit('presence', data);
 } // userId -> numero de conexoes abertas
 
 function findChannel(cid) {
@@ -339,6 +341,16 @@ function findChannel(cid) {
   }
   return null;
 }
+// Tira alguem da sala de voz (usado ao desconectar pela moderacao)
+function dropVoice(cid, sid) {
+  const r = voice.get(cid);
+  if (!r || !r.has(sid)) return;
+  r.delete(sid);
+  if (!r.size) voice.delete(cid);
+  io.to('v:' + cid).emit('voice:peer-left', { sid });
+  io.in(sid).socketsLeave('v:' + cid);
+}
+
 function voicePresence(g) {
   const out = {};
   for (const c of g.channels) {
@@ -427,6 +439,23 @@ function dmEntry(uid, other) {
   return { user: memberView(u), last: last ? { text: last.text, ts: last.ts, mine: last.userId === uid, att: !!last.att } : null };
 }
 
+// ------------------------------------------------------------------
+// Amigos
+// ------------------------------------------------------------------
+const friendsOf = id => (db.friends[id] ||= []);
+const freqOf = id => (db.freq[id] ||= { in: [], out: [] });
+const areFriends = (a, b) => friendsOf(a).includes(b);
+function friendState(uid) {
+  const f = freqOf(uid);
+  const u = id => db.users[id] && memberView(db.users[id]);
+  return {
+    friends: friendsOf(uid).map(u).filter(Boolean),
+    in: f.in.map(u).filter(Boolean),
+    out: f.out.map(u).filter(Boolean),
+  };
+}
+const pushFriends = uid => io.to('u:' + uid).emit('friends', friendState(uid));
+
 io.use((socket, next) => {
   const uid = db.tokens[socket.handshake.auth?.token];
   const u = uid && db.users[uid];
@@ -447,6 +476,7 @@ io.on('connection', socket => {
     user: { ...publicUser(u), presence: u.presence || 'online' },
     groups: mine.map(groupView),
     dms: (db.dms[u.id] || []).map(o => dmEntry(u.id, o)).filter(Boolean),
+    friends: friendState(u.id),
   });
 
   // ---------- Perfil ----------
@@ -477,6 +507,7 @@ io.on('connection', socket => {
     io.to('u:' + u.id).emit('profile:me', { ...publicUser(u), presence: u.presence || 'online' });
     for (const g of Object.values(db.groups)) if (g.members.includes(u.id)) emitGroup(g);
     for (const other of db.dms[u.id] || []) io.to('u:' + other).emit('dm:update', { entry: dmEntry(other, u.id) });
+    for (const other of db.friends[u.id] || []) pushFriends(other);
     reply(cb, { user: { ...publicUser(u), presence: u.presence || 'online' } });
   });
 
@@ -529,6 +560,54 @@ io.on('connection', socket => {
       removeMember(g, u.id);
     }
     save();
+    reply(cb, { ok: true });
+  });
+
+  // ---------- Amigos ----------
+  socket.on('friend:add', ({ query } = {}, cb) => {
+    const q = String(query || '').trim().replace(/^@/, '').toLowerCase();
+    if (!q) return reply(cb, { error: 'Digite o nome de usuário.' });
+    const other = Object.values(db.users).find(x => x.username.toLowerCase() === q || x.id === q);
+    if (!other) return reply(cb, { error: 'Não achei ninguém com esse nome de usuário.' });
+    if (other.id === u.id) return reply(cb, { error: 'Esse é você. 🙂' });
+    if (areFriends(u.id, other.id)) return reply(cb, { error: `Você e ${other.display || other.username} já são amigos.` });
+    const mine = freqOf(u.id), theirs = freqOf(other.id);
+    if (mine.in.includes(other.id)) {   // ja tinha pedido deles: vira amizade na hora
+      mine.in = mine.in.filter(x => x !== other.id);
+      theirs.out = theirs.out.filter(x => x !== u.id);
+      friendsOf(u.id).push(other.id);
+      friendsOf(other.id).push(u.id);
+      save(); pushFriends(u.id); pushFriends(other.id);
+      return reply(cb, { ok: true, msg: `Agora vocês são amigos!` });
+    }
+    if (mine.out.includes(other.id)) return reply(cb, { error: 'Você já enviou um pedido para essa pessoa.' });
+    if (mine.out.length >= 200) return reply(cb, { error: 'Muitos pedidos pendentes.' });
+    mine.out.push(other.id);
+    theirs.in.push(u.id);
+    save(); pushFriends(u.id); pushFriends(other.id);
+    reply(cb, { ok: true, msg: `Pedido enviado para ${other.display || other.username}.` });
+  });
+
+  socket.on('friend:accept', ({ userId } = {}, cb) => {
+    const mine = freqOf(u.id), theirs = freqOf(userId);
+    if (!mine.in.includes(userId)) return reply(cb, { error: 'Pedido não encontrado.' });
+    mine.in = mine.in.filter(x => x !== userId);
+    theirs.out = theirs.out.filter(x => x !== u.id);
+    if (!areFriends(u.id, userId)) { friendsOf(u.id).push(userId); friendsOf(userId).push(u.id); }
+    save(); pushFriends(u.id); pushFriends(userId);
+    reply(cb, { ok: true });
+  });
+
+  // recusar um pedido recebido, cancelar um enviado ou desfazer a amizade
+  socket.on('friend:remove', ({ userId } = {}, cb) => {
+    const mine = freqOf(u.id), theirs = freqOf(userId);
+    mine.in = mine.in.filter(x => x !== userId);
+    mine.out = mine.out.filter(x => x !== userId);
+    theirs.in = theirs.in.filter(x => x !== u.id);
+    theirs.out = theirs.out.filter(x => x !== u.id);
+    db.friends[u.id] = friendsOf(u.id).filter(x => x !== userId);
+    db.friends[userId] = friendsOf(userId).filter(x => x !== u.id);
+    save(); pushFriends(u.id); pushFriends(userId);
     reply(cb, { ok: true });
   });
 
@@ -783,6 +862,21 @@ io.on('connection', socket => {
     reply(cb, { ok: true });
   });
 
+  socket.on('channel:move', ({ groupId, channelId, cat, before } = {}, cb) => {
+    const g = db.groups[groupId];
+    if (!g || !g.members.includes(u.id) || !can(g, u.id, 'manageChannels')) return reply(cb, { error: 'Você não tem permissão para mover canais.' });
+    const i = g.channels.findIndex(c => c.id === channelId);
+    if (i < 0) return reply(cb, { error: 'Canal não encontrado.' });
+    const c = g.channels[i];
+    g.channels.splice(i, 1);
+    if (cat && g.categories.some(x => x.id === cat)) c.cat = cat; else delete c.cat;
+    const j = before ? g.channels.findIndex(x => x.id === before) : -1;
+    if (j < 0) g.channels.push(c); else g.channels.splice(j, 0, c);
+    save();
+    emitGroup(g);
+    reply(cb, { ok: true });
+  });
+
   // ---------- Mensagens ----------
   socket.on('channel:history', ({ channelId } = {}, cb) => {
     if (!channelCtx(channelId, u.id)) return reply(cb, { error: 'Canal não encontrado.' });
@@ -899,12 +993,13 @@ io.on('connection', socket => {
     if (r.size >= 12) return reply(cb, { error: 'Sala cheia (máximo 12 pessoas).' });
     voice.set(channelId, r);
     const peers = [...r.entries()].map(([sid, p]) => ({ sid, ...p }));
-    const me = { userId: u.id, username: u.username, color: u.color, mic: false, cam: false, screen: false };
+    const dupe = [...r.values()].some(p => p.userId === u.id);   // mesma conta em outro aparelho
+    const me = { userId: u.id, username: u.username, color: u.color, mic: false, cam: false, screen: false, fmute: false, dupe };
     r.set(socket.id, me);
     currentVoice = channelId;
     socket.join('v:' + channelId);
     socket.to('v:' + channelId).emit('voice:peer-joined', { sid: socket.id, ...me });
-    reply(cb, { peers, sid: socket.id });
+    reply(cb, { peers, sid: socket.id, dupe });
     emitPresence(f.g);
   });
 
@@ -915,11 +1010,55 @@ io.on('connection', socket => {
     const p = voice.get(currentVoice)?.get(socket.id);
     if (!p) return;
     for (const k of ['mic', 'cam', 'screen']) if (typeof st[k] === 'boolean') p[k] = st[k];
+    if (p.fmute) p.mic = false;
     const fv = findChannel(currentVoice);
     if (fv && !can(fv.g, u.id, 'video')) { p.cam = false; p.screen = false; }
     socket.to('v:' + currentVoice).emit('voice:state', { sid: socket.id, ...p });
     const f = findChannel(currentVoice);
     if (f) emitPresence(f.g);
+  });
+
+  // Moderação da chamada: silenciar, desconectar e mover
+  socket.on('voice:force', ({ sid, action, to } = {}, cb) => {
+    let cid = null, p = null;
+    for (const [ch, r] of voice) if (r.has(sid)) { cid = ch; p = r.get(sid); break; }
+    if (!p) return reply(cb, { error: 'Essa pessoa não está mais na chamada.' });
+    const f = findChannel(cid);
+    if (!f || !f.g.members.includes(u.id)) return reply(cb, { error: 'Sem permissão.' });
+    const g = f.g;
+    const need = action === 'move' ? 'moveMembers' : action === 'disconnect' ? 'disconnectMembers' : 'muteMembers';
+    if (!can(g, u.id, need)) return reply(cb, { error: 'Você não tem permissão para isso.' });
+    if (p.userId !== u.id && (p.userId === g.ownerId || rank(g, u.id) >= rank(g, p.userId)))
+      return reply(cb, { error: 'Essa pessoa está no mesmo nível ou acima do seu.' });
+    const who = db.users[p.userId]?.display || p.username;
+    if (action === 'mute' || action === 'unmute') {
+      p.fmute = action === 'mute';
+      if (p.fmute) p.mic = false;
+      io.to(sid).emit('voice:force', { action, by: u.username });
+      io.to('v:' + cid).emit('voice:state', { sid, ...p });
+      audit(g, u, `${p.fmute ? 'silenciou' : 'tirou o silêncio de'} ${who} na sala ${f.c.name}`);
+    } else if (action === 'disconnect') {
+      io.to(sid).emit('voice:force', { action, by: u.username });
+      dropVoice(cid, sid);
+      audit(g, u, `desconectou ${who} da sala ${f.c.name}`);
+    } else if (action === 'move') {
+      const dest = g.channels.find(c => c.id === to && c.type === 'voice');
+      if (!dest) return reply(cb, { error: 'Sala não encontrada.' });
+      if (dest.id === cid) return reply(cb, { ok: true });
+      io.to(sid).emit('voice:force', { action, channelId: dest.id, by: u.username });
+      audit(g, u, `moveu ${who} para a sala ${dest.name}`);
+    } else return reply(cb, { error: 'Ação inválida.' });
+    save();
+    emitPresence(g);
+    reply(cb, { ok: true });
+  });
+
+  // Cada espectador escolhe a resolução que quer RECEBER da transmissão.
+  // O pedido vai para quem transmite, que ajusta só a conexão com essa pessoa.
+  socket.on('voice:quality', ({ to, maxH } = {}) => {
+    if (!currentVoice) return;
+    if (!voice.get(currentVoice)?.has(to)) return;
+    io.to(to).emit('voice:quality', { from: socket.id, maxH: Math.max(0, Math.min(2160, Number(maxH) || 0)) });
   });
 
   socket.on('signal', ({ to, data } = {}) => {
@@ -940,7 +1079,7 @@ io.on('connection', socket => {
 // ------------------------------------------------------------------
 loadDb().then(() => {
   Object.values(db.groups).forEach(ensureGroup);
-  db.dms ||= {}; db.files ||= {};
+  db.dms ||= {}; db.files ||= {}; db.friends ||= {}; db.freq ||= {};
   server.listen(PORT, () => {
     const proto = process.env.HTTPS === '1' ? 'https' : 'http';
     console.log(`Nexo rodando em ${proto}://localhost:${PORT}`);
