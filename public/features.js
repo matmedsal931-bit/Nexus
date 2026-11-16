@@ -13,12 +13,22 @@ const PREFS_DEFAULT = {
   sound: true,
   muted: [],            // grupos silenciados
   mic: '', cam: '', out: '',
-  noise: true,          // reduzir ruído e eco
+  noise: true,          // (antigo) reduzir ruído e eco
+  ns: 'std',            // supressão de ruído: off | std | strong
+  echo: true,           // cancelamento de eco
+  agc: true,            // ganho automático
+  gate: 'auto',         // porta de ruído: off | auto | manual
+  gateDb: -50,          // sensibilidade manual (dB)
+  sfx: true, sfxVol: 80, // sons do app
   compact: false,
   fontSize: 15,
 };
 const prefs = (() => {
-  try { return { ...PREFS_DEFAULT, ...JSON.parse(store.get('nexo_prefs') || '{}') }; } catch { return { ...PREFS_DEFAULT }; }
+  let p;
+  try { p = { ...PREFS_DEFAULT, ...JSON.parse(store.get('nexo_prefs') || '{}') }; } catch { p = { ...PREFS_DEFAULT }; }
+  // quem tinha desligado "reduzir ruído" na versão antiga continua com ele desligado
+  if (p.noise === false && !('nsSet' in p)) { p.ns = 'off'; p.echo = false; p.nsSet = 1; }
+  return p;
 })();
 function setPref(k, v) {
   prefs[k] = v;
@@ -35,10 +45,103 @@ applyLook();
 // Microfone, câmera e saída de som escolhidos nas configurações
 // ---------------------------------------------------------------------
 function micConstraints() {
-  return {
+  const c = {
     deviceId: prefs.mic ? { ideal: prefs.mic } : undefined,
-    echoCancellation: prefs.noise, noiseSuppression: prefs.noise, autoGainControl: true,
+    echoCancellation: !!prefs.echo, noiseSuppression: prefs.ns !== 'off', autoGainControl: !!prefs.agc,
   };
+  // "Forte": isolamento de voz do navegador, quando ele tiver
+  try { if (prefs.ns === 'strong' && navigator.mediaDevices.getSupportedConstraints().voiceIsolation) c.voiceIsolation = true; } catch {}
+  return c;
+}
+
+// ---------------------------------------------------------------------
+// Processamento do microfone: filtro de graves + porta de ruído.
+// Roda num AudioWorklet (no processador de áudio), então continua
+// funcionando mesmo com o Nexo em segundo plano enquanto você joga.
+// ---------------------------------------------------------------------
+const GATE_WORKLET = `
+class NexoGate extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.mode = 'auto'; this.th = -50; this.env = -100; this.floor = -60;
+    this.gain = 0; this.hold = 0; this.level = -100; this.n = 0;
+    this.port.onmessage = e => { const d = e.data || {}; if (d.mode) this.mode = d.mode; if (typeof d.th === 'number') this.th = d.th; };
+  }
+  process(inputs, outputs) {
+    const inp = inputs[0], out = outputs[0];
+    if (!inp || !inp[0]) return true;
+    const x = inp[0], N = x.length, sr = sampleRate;
+    let sum = 0; for (let i = 0; i < N; i++) sum += x[i] * x[i];
+    const db = 10 * Math.log10(sum / N + 1e-12);
+    // envelope rápido para subir, lento para descer
+    this.env = db > this.env ? this.env + (db - this.env) * 0.5 : this.env + (db - this.env) * 0.08;
+    // piso de ruído: acompanha o silêncio devagar
+    if (this.env < this.floor) this.floor += (this.env - this.floor) * 0.05;
+    else this.floor += 0.004 * (N / 128);
+    let open;
+    if (this.mode === 'off') open = true;
+    else {
+      const th = this.mode === 'manual' ? this.th : Math.max(-65, Math.min(-30, this.floor + 12));
+      open = this.env > th;
+    }
+    if (open) this.hold = 0.28 * sr; else this.hold = Math.max(0, this.hold - N);
+    const target = open || this.hold > 0 ? 1 : 0;
+    const step = target > this.gain ? N / (0.006 * sr) : N / (0.09 * sr);
+    const g0 = this.gain;
+    this.gain = target > g0 ? Math.min(1, g0 + step) : Math.max(0, g0 - step);
+    for (let c = 0; c < out.length; c++) {
+      const xi = inp[c] || inp[0], o = out[c];
+      for (let i = 0; i < N; i++) o[i] = xi[i] * (g0 + (this.gain - g0) * i / N);
+    }
+    if (++this.n % 8 === 0) this.port.postMessage({ level: this.env, open: this.gain > 0.5, th: this.mode === 'manual' ? this.th : Math.max(-65, Math.min(-30, this.floor + 12)) });
+    return true;
+  }
+}
+registerProcessor('nexo-gate', NexoGate);`;
+let gateModule = null;
+async function ensureGateModule(ctx) {
+  if (!ctx.audioWorklet) throw new Error('sem AudioWorklet');
+  if (gateModule?.ctx === ctx) return gateModule.p;
+  const url = URL.createObjectURL(new Blob([GATE_WORKLET], { type: 'text/javascript' }));
+  gateModule = { ctx, p: ctx.audioWorklet.addModule(url) };
+  return gateModule.p;
+}
+// Recebe o microfone "cru" e devolve a faixa já tratada (a que vai para a chamada)
+async function processMic(raw, onLevel) {
+  ensureAudioCtx();
+  const ctx = call.audioCtx;
+  try {
+    if (!ctx) throw new Error('sem áudio');
+    await ensureGateModule(ctx);
+    const src = ctx.createMediaStreamSource(new MediaStream([raw]));
+    const hp = ctx.createBiquadFilter();
+    hp.type = 'highpass'; hp.frequency.value = prefs.ns === 'strong' ? 120 : prefs.ns === 'off' ? 20 : 80; hp.Q.value = 0.7;
+    const gate = new AudioWorkletNode(ctx, 'nexo-gate', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+    gate.port.postMessage({ mode: prefs.gate, th: prefs.gateDb });
+    if (onLevel) gate.port.onmessage = e => onLevel(e.data);
+    const dst = ctx.createMediaStreamDestination();
+    src.connect(hp).connect(gate).connect(dst);
+    const track = dst.stream.getAudioTracks()[0];
+    track._raw = raw;
+    track._gate = gate;
+    track._nodes = [src, hp, gate];
+    // parar a faixa tratada também solta o microfone de verdade
+    const stop = track.stop.bind(track);
+    track.stop = () => { stop(); try { raw.stop(); } catch {} try { src.disconnect(); hp.disconnect(); gate.disconnect(); } catch {} };
+    return track;
+  } catch (e) {
+    console.warn('processamento do microfone indisponível', e);
+    return raw;   // navegador antigo: manda o microfone sem a porta de ruído
+  }
+}
+// Abre o microfone com as configurações atuais
+async function acquireMic(onLevel) {
+  const s = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
+  return processMic(s.getAudioTracks()[0], onLevel);
+}
+// Ajustes da porta de ruído valem na hora, sem reabrir o microfone
+function updateGate() {
+  for (const t of [call.micTrack, ACC?.test?.track]) t?._gate?.port.postMessage({ mode: prefs.gate, th: prefs.gateDb });
 }
 function camDeviceConstraint() {
   return prefs.cam && !isMobile() ? { deviceId: { ideal: prefs.cam } } : {};
@@ -56,8 +159,7 @@ function applySinkAll() {
 async function switchMicDevice() {
   if (!call.channelId || !call.micTrack) return;
   try {
-    const s = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
-    const t = s.getAudioTracks()[0];
+    const t = await acquireMic();
     t.enabled = call.micTrack.enabled;
     const old = call.micTrack;
     call.micTrack = t;
@@ -284,6 +386,7 @@ setInterval(renderTyping, 1500);
 // ---------------------------------------------------------------------
 function shouldNotify(msg, groupId, dm) {
   if (prefs.notify === 'none' || msg.sys || msg.userId === S.user?.id) return false;
+  if (S.user?.presence === 'dnd') return false;      // não perturbar: nada de aviso
   if (dm) return true;
   const mention = mentionsMe(msg);
   if (prefs.muted.includes(groupId)) return mention;
@@ -292,26 +395,34 @@ function shouldNotify(msg, groupId, dm) {
 }
 let lastSound = 0;
 function playNotifySound() {
-  if (!prefs.sound) return;
+  if (!prefs.sound || S.user?.presence === 'dnd') return;
   const now = Date.now();
   if (now - lastSound < 1200) return;
   lastSound = now;
   try {
     ensureAudioCtx();
     const ctx = call.audioCtx; if (!ctx) return;
+    const vol = (prefs.sfxVol ?? 80) / 100;
     [[880, 0], [1320, 0.09]].forEach(([f, off]) => {
       const o = ctx.createOscillator(), g = ctx.createGain(), t0 = ctx.currentTime + off;
       o.type = 'sine'; o.frequency.setValueAtTime(f, t0);
       g.gain.setValueAtTime(0.0001, t0);
-      g.gain.exponentialRampToValueAtTime(0.08, t0 + 0.015);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.0002, 0.1 * vol), t0 + 0.015);
       g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.22);
       o.connect(g).connect(ctx.destination); o.start(t0); o.stop(t0 + 0.25);
     });
   } catch {}
 }
 function updateTitle() {
-  const n = S.unread.size;
-  document.title = n ? `(${n}) Nexo` : 'Nexo';
+  // conta as mensagens (grupos silenciados só contam menções)
+  let n = 0;
+  for (const [cid, u] of S.unread) {
+    const g = !isDmChannel(cid) && findChannel(cid)?.g;
+    n += g && prefs.muted.includes(g.id) ? u.m : u.n;
+  }
+  document.title = n ? `(${n > 99 ? '99+' : n}) Nexo` : 'Nexo';
+  // número no ícone do app (app instalado no PC/celular)
+  try { if (n) navigator.setAppBadge?.(n); else navigator.clearAppBadge?.(); } catch {}
 }
 // Silenciar um grupo (só no seu aparelho)
 function toggleGroupMute(gid) {

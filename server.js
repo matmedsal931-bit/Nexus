@@ -21,7 +21,7 @@ const MAX_MSGS_PER_CHANNEL = 1000;
 //   - Com DATABASE_URL (PostgreSQL, ex.: Neon gratuito): salva no banco,
 //     assim nada se perde quando o servidor na nuvem reinicia.
 // ------------------------------------------------------------------
-let db = { users: {}, tokens: {}, groups: {}, messages: {}, dms: {}, files: {}, friends: {}, freq: {} };
+let db = { users: {}, tokens: {}, groups: {}, messages: {}, dms: {}, files: {}, friends: {}, freq: {}, reads: {} };
 let pgPool = null;
 
 // O banco é gravado em partes: uma linha com os dados gerais (usuários, grupos...)
@@ -201,7 +201,13 @@ function publicUser(u) {
 }
 // "invisivel" aparece como offline para os outros
 const isOnline = id => online.has(id) && (db.users[id]?.presence || 'online') !== 'invisible';
-const visPresence = id => isOnline(id) ? (db.users[id].presence || 'online') : 'offline';
+const awake = new Map();   // uid -> aparelhos que estão sendo usados agora
+const isAway = id => online.has(id) && !(awake.get(id)?.size);
+const visPresence = id => {
+  if (!isOnline(id)) return 'offline';
+  const p = db.users[id].presence || 'online';
+  return p === 'online' && isAway(id) ? 'idle' : p;
+};
 const memberView = u => ({ ...publicUser(u), online: isOnline(u.id), presence: visPresence(u.id) });
 // ------------------------------------------------------------------
 // Cargos e permissoes
@@ -379,16 +385,45 @@ app.post('/api/logout', (req, res) => {
 
 // Servidores STUN/TURN usados pelo WebRTC.
 // TURN e necessario quando as pessoas estao em redes restritas (4G, empresas).
-app.get('/api/config', (req, res) => {
-  const iceServers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
+// Aceita três jeitos de configurar o TURN (variáveis no Render):
+//  - Cloudflare: CF_TURN_KEY_ID + CF_TURN_KEY_TOKEN (gera senhas temporárias sozinho)
+//  - Metered/Open Relay: METERED_TURN_URL (o link "credentials?apiKey=..." do painel)
+//  - Qualquer outro: TURN_URL + TURN_USER + TURN_PASS
+let iceCache = { at: 0, list: null };
+async function turnServers() {
+  if (iceCache.list && Date.now() - iceCache.at < 6 * 3600e3) return iceCache.list;
+  const out = [];
+  try {
+    if (process.env.CF_TURN_KEY_ID && process.env.CF_TURN_KEY_TOKEN) {
+      const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${encodeURIComponent(process.env.CF_TURN_KEY_ID)}/credentials/generate-ice-servers`, {
+        method: 'POST', signal: AbortSignal.timeout(6000),
+        headers: { Authorization: 'Bearer ' + process.env.CF_TURN_KEY_TOKEN, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ttl: 86400 }),
+      });
+      const j = await r.json();
+      for (const x of j.iceServers || []) if ([].concat(x.urls).some(u => /^turns?:/.test(u))) out.push(x);
+      if (!out.length) console.warn('TURN Cloudflare: resposta sem servidores', r.status);
+    }
+    if (process.env.METERED_TURN_URL) {
+      const r = await fetch(process.env.METERED_TURN_URL, { signal: AbortSignal.timeout(6000) });
+      const j = await r.json();
+      for (const x of Array.isArray(j) ? j : []) if ([].concat(x.urls).some(u => /^turns?:/.test(u))) out.push(x);
+      if (!out.length) console.warn('TURN Metered: resposta sem servidores', r.status);
+    }
+  } catch (e) { console.warn('TURN: não consegui buscar as senhas', e.message); }
   if (process.env.TURN_URL) {
-    iceServers.push({
+    out.push({
       urls: process.env.TURN_URL.split(',').map(s => s.trim()),
       username: process.env.TURN_USER || '',
       credential: process.env.TURN_PASS || '',
     });
   }
-  res.json({ iceServers });
+  if (out.length) iceCache = { at: Date.now(), list: out };
+  return out;
+}
+app.get('/api/config', async (req, res) => {
+  const turn = await turnServers();
+  res.json({ iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }, ...turn], turn: turn.length > 0 });
 });
 
 // Foto de perfil (guardada como data URL no banco)
@@ -632,6 +667,50 @@ function linkDm(a, b) {
     if (!l.includes(y)) l.push(y);
   }
 }
+// ------------------------------------------------------------------
+// Mensagens não lidas (guardadas no servidor: valem em todos os aparelhos
+// e contam o que chegou enquanto a pessoa estava offline)
+// ------------------------------------------------------------------
+function readsOf(uid) {
+  // primeira vez: começa a contar de agora (não marca o histórico antigo como novo)
+  return (db.reads[uid] ||= { _since: Date.now() });
+}
+function lastRead(uid, cid, g) {
+  const r = readsOf(uid);
+  if (r[cid]) return r[cid];
+  return Math.max(r._since || 0, g?.joined?.[uid] || 0);
+}
+function countUnread(uid, cid, since, mentionable) {
+  const arr = db.messages[cid] || [];
+  let n = 0, m = 0;
+  for (let i = arr.length - 1; i >= 0 && n < 100; i--) {
+    const x = arr[i];
+    if (x.ts <= since) break;
+    if (x.userId === uid) continue;
+    if (x.sys && mentionable) continue;          // "fulano entrou no grupo" não conta
+    n++;
+    if (mentionable && x.mentions?.includes(uid)) m++;
+  }
+  return [n, m];
+}
+function unreadFor(uid) {
+  const out = {};
+  for (const g of Object.values(db.groups)) {
+    if (!g.members.includes(uid)) continue;
+    for (const c of g.channels) {
+      if (c.type !== 'text') continue;
+      const [n, m] = countUnread(uid, c.id, lastRead(uid, c.id, g), true);
+      if (n) out[c.id] = [n, m];
+    }
+  }
+  for (const other of db.dms[uid] || []) {
+    const cid = dmId(uid, other);
+    const [n] = countUnread(uid, cid, lastRead(uid, cid), false);
+    if (n) out[cid] = [n, n];
+  }
+  return out;
+}
+
 function dmEntry(uid, other) {
   const u = db.users[other];
   if (!u) return null;
@@ -672,13 +751,34 @@ io.on('connection', socket => {
   socket.join('u:' + u.id);
   const mine = Object.values(db.groups).filter(g => g.members.includes(u.id));
   mine.forEach(g => socket.join('g:' + g.id));
+  const wasPres = visPresence(u.id);
   online.set(u.id, (online.get(u.id) || 0) + 1);
-  if (online.get(u.id) === 1) broadcastPresence(u.id, socket);
+  (awake.get(u.id) || awake.set(u.id, new Set()).get(u.id)).add(socket.id);
+  if (online.get(u.id) === 1 || visPresence(u.id) !== wasPres) broadcastPresence(u.id, online.get(u.id) === 1 ? socket : undefined);
+  // o aparelho avisa quando a pessoa para de mexer nele (e quando volta)
+  socket.on('presence:away', ({ away } = {}) => {
+    const before = visPresence(u.id);
+    const set = awake.get(u.id) || awake.set(u.id, new Set()).get(u.id);
+    if (away) set.delete(socket.id); else set.add(socket.id);
+    if (visPresence(u.id) !== before) broadcastPresence(u.id);
+    socket.emit('presence:self', { away: isAway(u.id) });
+  });
   socket.emit('init', {
     user: { ...publicUser(u), presence: u.presence || 'online' },
     groups: mine.map(groupView),
     dms: (db.dms[u.id] || []).map(o => dmEntry(u.id, o)).filter(Boolean),
     friends: friendState(u.id),
+    unread: unreadFor(u.id),
+  });
+
+  // Marcou como lido: vale para todos os aparelhos da pessoa
+  socket.on('read', ({ channelId } = {}) => {
+    if (typeof channelId !== 'string' || channelId.length > 80) return;
+    const ok = dmPeers(channelId)?.includes(u.id) || findChannel(channelId)?.g.members.includes(u.id);
+    if (!ok) return;
+    readsOf(u.id)[channelId] = Date.now();
+    save();
+    socket.to('u:' + u.id).emit('read', { channelId });
   });
 
   // ---------- Conta ----------
@@ -1417,6 +1517,7 @@ io.on('connection', socket => {
     const who = db.users[p.userId]?.display || p.username;
     // todos os aparelhos dessa pessoa na sala (moderar um só deixaria falar pelo outro)
     const devs = [...voice.get(cid).entries()].filter(([, x]) => x.userId === p.userId);
+    if (['mute', 'unmute', 'deafen', 'undeafen'].includes(action)) io.to('v:' + cid).emit('voice:modsound', { action, userId: p.userId });
     if (action === 'mute' || action === 'unmute') {
       for (const [dsid, dp] of devs) {
         dp.fmute = action === 'mute';
@@ -1482,9 +1583,12 @@ io.on('connection', socket => {
 
   socket.on('disconnect', () => {
     leaveVoice();
+    const before = visPresence(u.id);
+    awake.get(u.id)?.delete(socket.id);
     const n = (online.get(u.id) || 1) - 1;
-    if (n > 0) { online.set(u.id, n); return; }
+    if (n > 0) { online.set(u.id, n); if (visPresence(u.id) !== before) broadcastPresence(u.id); return; }
     online.delete(u.id);
+    awake.delete(u.id);
     broadcastPresence(u.id);
   });
 });
@@ -1498,7 +1602,7 @@ setInterval(() => {
 
 loadDb().then(() => {
   Object.values(db.groups).forEach(ensureGroup);
-  db.dms ||= {}; db.files ||= {}; db.friends ||= {}; db.freq ||= {};
+  db.dms ||= {}; db.files ||= {}; db.friends ||= {}; db.freq ||= {}; db.reads ||= {};
   server.listen(PORT, () => {
     const proto = process.env.HTTPS === '1' ? 'https' : 'http';
     console.log(`Nexo rodando em ${proto}://localhost:${PORT}`);

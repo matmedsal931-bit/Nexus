@@ -12,6 +12,17 @@ const ACC_TABS = [
   ['aparencia', 'Aparência'],
 ];
 const ACC = { tab: 'conta', test: null };
+function nsHelp() {
+  const iso = (() => { try { return !!navigator.mediaDevices.getSupportedConstraints().voiceIsolation; } catch { return false; } })();
+  return prefs.ns === 'off' ? 'Sem filtro: bom para tocar instrumento ou usar microfone profissional.'
+    : prefs.ns === 'strong' ? (iso ? 'Corta ventilador, teclado e barulho de fundo com o isolamento de voz do navegador, mais um filtro de graves.' : 'Filtro de graves mais forte. Seu navegador não tem o isolamento de voz; no Chrome/Edge atualizados ele fica ainda melhor.')
+    : 'Tira chiado e ruído leve, sem mudar o jeito da sua voz.';
+}
+function gateHelp() {
+  return prefs.gate === 'auto' ? 'O Nexo aprende o barulho do seu ambiente e só envia o som quando você fala. A marca na barra mostra o limite.'
+    : prefs.gate === 'manual' ? 'Arraste: o som só é enviado quando passa da marca (barra verde). Fale baixo e veja se ainda fica verde.'
+    : 'O microfone envia tudo o tempo todo, inclusive o barulho do ambiente.';
+}
 
 function openAccount(tab = 'conta') {
   closeCtx();
@@ -131,13 +142,21 @@ async function accVoz(body) {
       ${canPickOutput() ? `<label>Saída de som<select id="av-out">${opts('audiooutput', prefs.out)}</select></label>` : ''}
       <label>Câmera<select id="av-cam">${opts('videoinput', prefs.cam)}</select></label>
     </div>
-    <div class="set-block"><div class="pf-h">Testar microfone</div>
-      <div class="mic-test"><button class="btn" id="av-test">Testar</button><div class="meter"><i id="av-bar"></i></div></div>
-      <p class="muted small">Fale algo: a barra deve se mexer.</p></div>
+    <div class="set-block"><div class="pf-h">Sensibilidade do microfone</div>
+      <div class="seg" id="av-gate">${[['auto', 'Automática'], ['manual', 'Manual'], ['off', 'Sempre transmitir']].map(([k, v]) => `<button data-g="${k}" class="${prefs.gate === k ? 'on' : ''}">${v}</button>`).join('')}</div>
+      <div class="mic-test"><button class="btn" id="av-test">Testar</button>
+        <div class="meter gate"><i id="av-bar"></i><b id="av-th" style="left:${(prefs.gateDb + 80) / 80 * 100}%"></b>
+          <input type="range" id="av-gdb" min="-80" max="-10" step="1" value="${prefs.gateDb}" ${prefs.gate === 'manual' ? '' : 'disabled'} aria-label="Sensibilidade"></div></div>
+      <p class="muted small" id="av-gtxt">${gateHelp()}</p></div>
     <div class="set-block"><div class="pf-h">Testar câmera</div>
       <div class="cam-test"><video id="av-video" autoplay playsinline muted></video><button class="btn" id="av-camtest">Ligar a câmera de teste</button></div></div>
-    <label class="perm"><div><b>Reduzir ruído e eco</b><p>Deixa a voz mais limpa. Desligue se for tocar música ou usar um microfone profissional.</p></div>
-      <input type="checkbox" class="tg" id="av-noise" ${prefs.noise ? 'checked' : ''}></label>`;
+    <div class="set-block"><div class="pf-h">Supressão de ruído</div>
+      <div class="seg" id="av-ns">${[['off', 'Desligada'], ['std', 'Padrão'], ['strong', 'Forte']].map(([k, v]) => `<button data-ns="${k}" class="${prefs.ns === k ? 'on' : ''}">${v}</button>`).join('')}</div>
+      <p class="muted small" id="av-nstxt">${nsHelp()}</p></div>
+    <label class="perm"><div><b>Cancelamento de eco</b><p>Evita que o som que sai do seu alto-falante volte pelo microfone. Pode desligar se usar fone de ouvido.</p></div>
+      <input type="checkbox" class="tg" id="av-echo" ${prefs.echo ? 'checked' : ''}></label>
+    <label class="perm"><div><b>Ganho automático</b><p>Ajusta o volume da sua voz sozinho. Desligue se usar um microfone profissional com ganho próprio.</p></div>
+      <input type="checkbox" class="tg" id="av-agc" ${prefs.agc ? 'checked' : ''}></label>`;
   const q = s => body.querySelector(s);
   q('#av-allow')?.addEventListener('click', async () => {
     try { const s = await navigator.mediaDevices.getUserMedia({ audio: true, video: true }); s.getTracks().forEach(t => t.stop()); }
@@ -147,31 +166,52 @@ async function accVoz(body) {
   q('#av-mic').onchange = e => { setPref('mic', e.target.value); toast('Microfone salvo.'); switchMicDevice(); if (ACC.test?.stream) restartMicTest(); };
   q('#av-out')?.addEventListener('change', e => { setPref('out', e.target.value); applySinkAll(); toast('Saída de som salva.'); });
   q('#av-cam').onchange = e => { setPref('cam', e.target.value); toast('Câmera salva.'); if (ACC.test?.cam) startCamTest(); };
-  q('#av-noise').onchange = e => { setPref('noise', e.target.checked); if (call.micTrack) switchMicDevice(); };
+  const reMic = () => { if (call.micTrack) switchMicDevice(); if (ACC.test?.stream) restartMicTest(); };
+  q('#av-ns').onclick = e => {
+    const b = e.target.closest('[data-ns]'); if (!b) return;
+    setPref('ns', b.dataset.ns); setPref('nsSet', 1);
+    q('#av-ns').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    q('#av-nstxt').textContent = nsHelp();
+    reMic();
+  };
+  q('#av-echo').onchange = e => { setPref('echo', e.target.checked); setPref('nsSet', 1); reMic(); };
+  q('#av-agc').onchange = e => { setPref('agc', e.target.checked); reMic(); };
+  q('#av-gate').onclick = e => {
+    const b = e.target.closest('[data-g]'); if (!b) return;
+    setPref('gate', b.dataset.g);
+    q('#av-gate').querySelectorAll('button').forEach(x => x.classList.toggle('on', x === b));
+    q('#av-gdb').disabled = prefs.gate !== 'manual';
+    q('#av-gtxt').textContent = gateHelp();
+    updateGate();
+    if (!ACC.test?.stream) restartMicTest();
+  };
+  q('#av-gdb').oninput = e => {
+    setPref('gateDb', Number(e.target.value));
+    q('#av-th').style.left = (prefs.gateDb + 80) / 80 * 100 + '%';
+    updateGate();
+  };
 
   const restartMicTest = async () => {
     const keepCam = ACC.test?.cam;
     if (ACC.test) { clearInterval(ACC.test.timer); ACC.test.stream?.getTracks().forEach(x => x.stop()); }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
-      ensureAudioCtx();
-      const an = call.audioCtx.createAnalyser(); an.fftSize = 512;
-      call.audioCtx.createMediaStreamSource(stream).connect(an);
-      const buf = new Uint8Array(an.fftSize);
-      const timer = setInterval(() => {
-        an.getByteTimeDomainData(buf);
-        let sum = 0; for (const v of buf) { const x = (v - 128) / 128; sum += x * x; }
-        const bar = document.getElementById('av-bar');
-        if (bar) bar.style.width = Math.min(100, Math.sqrt(sum / buf.length) * 400) + '%';
-      }, 60);
-      ACC.test = { ...(ACC.test || {}), stream, timer, cam: keepCam };
+      // o teste passa pelo mesmo tratamento da chamada: a barra fica verde quando a voz seria enviada
+      const track = await acquireMic(d => {
+        const bar = document.getElementById('av-bar'), th = document.getElementById('av-th');
+        if (!bar) return;
+        bar.style.width = Math.max(0, Math.min(100, (d.level + 80) / 80 * 100)) + '%';
+        bar.classList.toggle('open', !!d.open);
+        if (th && prefs.gate === 'auto') th.style.left = Math.max(0, Math.min(100, (d.th + 80) / 80 * 100)) + '%';
+      });
+      const stream = new MediaStream([track]);
+      ACC.test = { ...(ACC.test || {}), stream, track, timer: null, cam: keepCam };
       q('#av-test').textContent = 'Parar teste';
     } catch { toast('Não consegui usar o microfone.'); }
   };
   q('#av-test').onclick = () => {
     if (ACC.test?.stream) {
       clearInterval(ACC.test.timer); ACC.test.stream.getTracks().forEach(x => x.stop());
-      ACC.test.stream = null; q('#av-test').textContent = 'Testar';
+      ACC.test.stream = null; ACC.test.track = null; q('#av-test').textContent = 'Testar';
       const bar = document.getElementById('av-bar'); if (bar) bar.style.width = '0';
     } else restartMicTest();
   };
@@ -210,6 +250,12 @@ function accNotif(body) {
         `<label class="radio-row"><input type="radio" name="an-lvl" value="${k}" ${prefs.notify === k ? 'checked' : ''}><div><b>${t}</b><p>${d}</p></div></label>`).join('')}</div>
     <label class="perm"><div><b>Tocar som</b><p>Um bipe curto quando chega mensagem que avisa.</p></div>
       <input type="checkbox" class="tg" id="an-sound" ${prefs.sound ? 'checked' : ''}></label>
+    <label class="perm"><div><b>Sons da chamada</b><p>Entrar, sair, mutar, desmutar, transmissão e o toque de ligação.</p></div>
+      <input type="checkbox" class="tg" id="an-sfx" ${prefs.sfx !== false ? 'checked' : ''}></label>
+    <div class="set-block"><div class="pf-h">Volume dos sons</div>
+      <div class="vol">${I.vol}<input type="range" min="0" max="100" step="5" value="${prefs.sfxVol ?? 80}" id="an-vol"><b id="an-voll">${prefs.sfxVol ?? 80}%</b></div>
+      <div class="row l snd-test">${[['ring', 'Toque de ligação'], ['join', 'Entrar'], ['leave', 'Sair'], ['mute', 'Mutar'], ['unmute', 'Desmutar'], ['deafen', 'Desativar áudio'], ['modMute', 'Moderador silenciou'], ['live', 'Transmissão']].map(([k, v]) => `<button class="btn sm" data-snd="${k}">${v}</button>`).join('')}</div>
+      <p class="muted small">No status <b>Não perturbar</b>, nada avisa e a ligação aparece sem tocar.</p></div>
     <div class="set-block"><div class="pf-h">Grupos silenciados</div>
       ${prefs.muted.filter(id => group(id)).length
         ? prefs.muted.filter(id => group(id)).map(id => `<div class="row l mute-row"><span>${esc(group(id).name)}</span><button class="btn sm" data-un="${esc(id)}">Voltar a avisar</button></div>`).join('')
@@ -218,6 +264,16 @@ function accNotif(body) {
   q('#an-ask')?.addEventListener('click', async () => { try { await Notification.requestPermission(); } catch {} renderAccount(); });
   body.querySelectorAll('[name=an-lvl]').forEach(r => r.onchange = () => { setPref('notify', r.value); toast('Salvo.'); });
   q('#an-sound').onchange = e => { setPref('sound', e.target.checked); if (e.target.checked) { lastSound = 0; playNotifySound(); } };
+  q('#an-sfx').onchange = e => setPref('sfx', e.target.checked);
+  q('#an-vol').oninput = e => { setPref('sfxVol', Number(e.target.value)); q('#an-voll').textContent = e.target.value + '%'; };
+  q('#an-vol').onchange = () => SFX.play('unmute');
+  body.querySelectorAll('[data-snd]').forEach(b => b.onclick = () => {
+    if (b.dataset.snd === 'ring') {
+      if (SFX.ringing) { SFX.stop('ring'); b.textContent = 'Toque de ligação'; return; }
+      SFX.ring(); b.textContent = 'Parar toque';
+      setTimeout(() => { if (SFX.ringing && !ring.channelId) { SFX.stop('ring'); b.textContent = 'Toque de ligação'; } }, 7000);
+    } else SFX.play(b.dataset.snd);
+  });
   body.querySelectorAll('[data-un]').forEach(b => b.onclick = () => { toggleGroupMute(b.dataset.un); renderAccount(); });
 }
 

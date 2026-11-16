@@ -83,7 +83,7 @@ const S = {
   dmPeer: null,           // com quem estou conversando agora
   atts: [],               // arquivos escolhidos, esperando envio
   friends: { friends: [], in: [], out: [] },
-  unread: new Set(),      // channelIds com mensagens novas
+  unread: new Map(),      // channelId -> { n: não lidas, m: menções }
   ice: [{ urls: 'stun:stun.l.google.com:19302' }],
   socket: null,
   pendingInvite: null,
@@ -144,7 +144,7 @@ function userById(id) {
 // Nome que aparece: o nome exibido (editável), ou o de login
 const nameOf = (uid, fb) => userById(uid)?.name || fb || '?';
 function cacheUser(u) { if (u?.id && u.id !== S.user?.id) S.users[u.id] = { ...S.users[u.id], ...u }; }
-const presOf = u => (u?.id === S.user?.id ? (S.user.presence === 'invisible' ? 'offline' : S.user.presence || 'online') : (u?.presence || (u?.online ? 'online' : 'offline')));
+const presOf = u => (u?.id === S.user?.id ? (S.user.presence === 'invisible' ? 'offline' : (S.user.presence || 'online') === 'online' && S.away ? 'idle' : S.user.presence || 'online') : (u?.presence || (u?.online ? 'online' : 'offline')));
 const presDot = u => `<i class="pres ${presOf(u)}"></i>`;
 function avatar(u, cls = '') {
   const id = u.userId ?? u.id;
@@ -258,7 +258,7 @@ async function start() {
   $('#auth').classList.add('hidden');
   $('#app').classList.remove('hidden');
   setMembers(!isMobile() && store.get('nexo_members') !== '0', true);
-  try { const r = await fetch('/api/config'); S.ice = (await r.json()).iceServers; } catch {}
+  await loadIce();
   connect();
 }
 
@@ -270,6 +270,7 @@ function connect() {
   sock.on('connect_error', e => { if (e.message === 'auth') logout(); });
 
   sock.on('init', d => {
+    if (away.on) sock.emit('presence:away', { away: true });   // voltou a conectar parado
     S.user = d.user;
     S.groups = d.groups;
     S.dms = d.dms || [];
@@ -278,6 +279,8 @@ function connect() {
     S.users = {};
     S.dms.forEach(x => cacheUser(x.user));
     d.groups.forEach(g => g.members.forEach(cacheUser));
+    S.unread = new Map(Object.entries(d.unread || {}).map(([k, [n, m]]) => [k, { n, m }]));
+    if (S.cid && S.view === 'chat' && document.visibilityState === 'visible') markRead(S.cid);
     if (S.gid === '@me' && !S.dms.length) S.gid = S.groups[0]?.id || '@me';
     if (S.gid !== '@me' && !group(S.gid)) S.gid = S.groups[0]?.id || (S.dms.length ? '@me' : null);
     // recarrega historico apos reconectar
@@ -324,8 +327,13 @@ function connect() {
     stopTypingOf(channelId, msg.userId);
     const visible = channelId === S.cid && S.view === 'chat' && document.visibilityState === 'visible';
     if (channelId === S.cid) renderMessages(true);
-    if (!visible && msg.userId !== S.user?.id) {
-      S.unread.add(channelId);
+    if (visible) markReadSoon(channelId);
+    if (!visible && msg.userId !== S.user?.id && !(msg.sys && !dm)) {
+      const u = S.unread.get(channelId) || { n: 0, m: 0 };
+      u.n = Math.min(100, u.n + 1);
+      if (dm || mentionsMe(msg)) u.m++;
+      S.unread.set(channelId, u);
+      if (dm) { const d = S.dms.find(x => x.user.id === dmOther(channelId)); if (d) d.last = { text: msg.text, ts: msg.ts, mine: false, att: !!msg.att }; }
       renderRail(); renderChannels();
       if (shouldNotify(msg, groupId, dm)) {
         playNotifySound();
@@ -334,6 +342,8 @@ function connect() {
     }
   });
   sock.on('typing', onTyping);
+  // li em outro aparelho
+  sock.on('read', ({ channelId }) => { if (S.unread.delete(channelId)) { renderRail(); renderChannels(); } });
   sock.on('session:ended', () => { toast('Sua conta foi desconectada deste aparelho.', 6000); logout(); });
 
   sock.on('profile:me', u => { S.user = u; renderAll(); if (S.cid) renderMessages('keep'); if (call.channelId) renderTiles(); });
@@ -345,17 +355,18 @@ function connect() {
   });
   sock.on('dm:ring', ({ channelId, from }) => {
     if (call.channelId === channelId) return;      // já estou na ligação
-    if (call.channelId) {                           // ocupado em outra chamada
+    if (call.channelId && callIsDm()) {             // já estou em outra ligação privada
       emit('dm:decline', { channelId });
       toast(`${from.name} tentou te ligar.`, 6000);
       return;
     }
-    showIncoming(channelId, from);
+    showIncoming(channelId, from);                  // em call de grupo: a ligação aparece normalmente
   });
   sock.on('dm:ring-stop', ({ channelId }) => {
     if (ring.channelId === channelId) { stopIncoming(); closeModal(); }
   });
   sock.on('dm:declined', ({ channelId, by }) => {
+    SFX.stop('back'); SFX.play('busy');
     toast(`${by.name} recusou a ligação.`, 5000);
     if (call.channelId === channelId) leaveCall();
     else if (isDmChannel(channelId)) openDM(dmOther(channelId));
@@ -447,8 +458,12 @@ function connect() {
     } else toast('Reconectando…');
   });
 
-  sock.on('voice:peer-joined', p => { if (call.channelId) { addPeer(p); playJoinSound(true); } });
-  sock.on('voice:peer-left', ({ sid }) => { if (call.peers.has(sid)) { removePeer(sid); playJoinSound(false); } });
+  sock.on('voice:peer-joined', p => { if (call.channelId) { SFX.stop('back'); addPeer(p); playJoinSound(true, true); } });
+  sock.on('voice:peer-left', ({ sid }) => { if (call.peers.has(sid)) { removePeer(sid); playJoinSound(false, true); } });
+  // um moderador silenciou ou desativou o áudio de alguém: a sala toda ouve
+  sock.on('voice:modsound', ({ action }) => { if (call.channelId) SFX.play(action === 'mute' || action === 'deafen' ? 'modMute' : 'modUnmute'); });
+  // ausente automático (vale quando todos os aparelhos estão parados)
+  sock.on('presence:self', ({ away }) => { S.away = !!away; renderUserbar?.(); });
   sock.on('voice:state', p => onPeerState(p));
   sock.on('signal', ({ from, data }) => onSignal(from, data));
   sock.on('voice:watch', onWatchRequest);
@@ -470,6 +485,30 @@ function connect() {
   });
 }
 
+// ---------- Não lidas ----------
+// Tira o aviso do canal e avisa o servidor (assim some nos outros aparelhos também)
+function markRead(cid) {
+  if (!cid) return false;
+  const had = S.unread.delete(cid);
+  S.socket?.emit('read', { channelId: cid });
+  if (had) updateTitle();
+  return had;
+}
+const readTimers = {};
+function markReadSoon(cid) {          // chegou mensagem com a conversa aberta
+  clearTimeout(readTimers[cid]);
+  readTimers[cid] = setTimeout(() => S.socket?.emit('read', { channelId: cid }), 1500);
+}
+const unreadOf = cid => S.unread.get(cid)?.n || 0;
+const badgeTxt = n => n > 99 ? '99+' : String(n);
+// Quantas mostrar no ícone do grupo (silenciado: só menções)
+function groupUnread(g) {
+  const muted = typeof prefs !== 'undefined' && prefs.muted.includes(g.id);
+  let n = 0, m = 0, any = false;
+  for (const c of g.channels) { const u = S.unread.get(c.id); if (u) { any = true; n += u.n; m += u.m; } }
+  return { any: any && (!muted || m > 0), count: muted ? m : n };
+}
+
 function notify(msg, groupId, channelId, dmPeer) {
   try {
     if (document.visibilityState === 'visible') return;
@@ -478,7 +517,9 @@ function notify(msg, groupId, channelId, dmPeer) {
     const who = nameOf(msg.userId, msg.username);
     const title = dmPeer ? who : `${who} em #${f?.c.name || ''}`;
     const body = msg.text || (msg.att ? '📎 ' + msg.att.name : '');
-    const n = new Notification(title, { body: body.slice(0, 140), icon: '/icons/icon-192.png', tag: channelId });
+    const su = userById(msg.userId);
+    const icon = su?.av ? `/api/avatar/${encodeURIComponent(msg.userId)}?v=${su.av}` : '/icons/icon-192.png';
+    const n = new Notification(title, { body: body.slice(0, 140), icon, badge: '/icons/icon-192.png', tag: channelId, renotify: true });
     n.onclick = () => { window.focus(); if (dmPeer) openDM(dmPeer); else { S.gid = groupId; openTextChannel(channelId); } n.close(); };
   } catch {}
 }
@@ -521,7 +562,7 @@ async function openDM(userId) {
   S.msgs[r.channelId] = r.messages;
   S.more[r.channelId] = !!r.hasMore;
   S.gid = '@me'; S.dmPeer = userId; S.cid = r.channelId;
-  S.unread.delete(r.channelId);
+  markRead(r.channelId);
   store.set('nexo_gid', '@me');
   clearCompose();
   setView('chat');
@@ -540,7 +581,7 @@ function openTextChannel(cid) {
   clearCompose();
   store.set('nexo_gid', f.g.id);
   store.set('nexo_cid_' + f.g.id, cid);
-  S.unread.delete(cid);
+  markRead(cid);
   setView('chat');
   loadHistory(cid);
   closeDrawer();
@@ -611,6 +652,7 @@ function renderFriends() {
 
 function setView(v) {
   S.view = v;
+  setTimeout(updateCinema, 0);
   $('#friends-view').classList.toggle('hidden', v !== 'friends');
   $('#empty-view').classList.toggle('hidden', v !== 'empty');
   $('#chat-view').classList.toggle('hidden', v !== 'chat');
@@ -636,19 +678,33 @@ function renderRail() {
   rail.innerHTML = '';
   const dmUnread = S.dms.some(d => S.unread.has(dmChannelId(d.user.id)));
   const home = document.createElement('button');
-  home.className = 'rail-home' + (S.gid === '@me' ? '' : ' off') + (dmUnread ? ' unread' : '');
+  // as conversas não lidas já aparecem com a foto logo abaixo; o botão só ganha a bolinha se alguma não couber
+  home.className = 'rail-home' + (S.gid === '@me' ? '' : ' off') + (dmUnread && S.dms.filter(d => unreadOf(dmChannelId(d.user.id))).length > 8 ? ' unread' : '');
   home.title = 'Mensagens diretas';
   home.innerHTML = I.home + (S.friends.in.length ? `<span class="badge">${S.friends.in.length}</span>` : '');
   home.onclick = () => selectGroup('@me');
   rail.appendChild(home);
+  // conversas privadas com mensagem nova aparecem logo abaixo, com a foto da pessoa
+  const pend = S.dms.filter(d => unreadOf(dmChannelId(d.user.id)) > 0)
+    .sort((a, b) => (b.last?.ts || 0) - (a.last?.ts || 0)).slice(0, 8);
+  for (const d of pend) {
+    const b = document.createElement('button');
+    b.className = 'rail-dm';
+    b.title = `${d.user.name} — ${unreadOf(dmChannelId(d.user.id))} mensagem(ns) nova(s)`;
+    b.dataset.dm = d.user.id;
+    b.innerHTML = avatar(d.user, 'nodot') + `<span class="badge">${badgeTxt(unreadOf(dmChannelId(d.user.id)))}</span>`;
+    b.onclick = () => openDM(d.user.id);
+    rail.appendChild(b);
+  }
   if (S.groups.length) { const sp = document.createElement('div'); sp.className = 'rail-sep'; rail.appendChild(sp); }
   for (const g of S.groups) {
     const b = document.createElement('button');
-    const unread = g.channels.some(c => S.unread.has(c.id));
-    b.className = 'g-btn' + (g.id === S.gid ? ' active' : '') + (unread ? ' unread' : '');
-    b.title = g.name;
+    const gu = groupUnread(g);
+    b.className = 'g-btn' + (g.id === S.gid ? ' active' : '') + (gu.any ? ' unread' : '');
+    b.title = g.name + (gu.count ? ` — ${gu.count} mensagem(ns) nova(s)` : '');
     if (g.iv) b.innerHTML = `<img src="/api/gicon/${esc(g.id)}?v=${g.iv}" alt="">`;
     else b.textContent = g.name.split(/\s+/).map(w => w[0]).join('').slice(0, 3).toUpperCase();
+    if (gu.any && gu.count) b.insertAdjacentHTML('beforeend', `<span class="badge">${badgeTxt(gu.count)}</span>`);
     b.onclick = () => selectGroup(g.id);
     rail.appendChild(b);
   }
@@ -707,7 +763,8 @@ function renderChannels() {
   const row = c => {
     if (c.type === 'text') {
       const active = c.id === S.cid && S.view === 'chat';
-      return `<button class="ch ${active ? 'active' : ''} ${S.unread.has(c.id) ? 'unread' : ''}" data-cid="${c.id}" data-ch="${c.id}">${I.hash}<span class="label">${esc(c.name)}</span>${del(c)}</button>`;
+      const un = unreadOf(c.id);
+      return `<button class="ch ${active ? 'active' : ''} ${un ? 'unread' : ''}" data-cid="${c.id}" data-ch="${c.id}">${I.hash}<span class="label">${esc(c.name)}</span>${un ? `<span class="cnt">${badgeTxt(un)}</span>` : ''}${del(c)}</button>`;
     }
     const people = g.voice?.[c.id] || [];
     const active = call.channelId === c.id && S.view === 'voice';
@@ -772,7 +829,7 @@ function renderDMs(head, list) {
     const cid = dmChannelId(d.user.id);
     const prev = d.inCall ? '📞 Em chamada' : d.last ? (d.last.mine ? 'Você: ' : '') + (d.last.text || '📎 arquivo') : '';
     return `<button class="dm-row ${S.dmPeer === d.user.id ? 'active' : ''} ${S.unread.has(cid) ? 'unread' : ''}" data-dm="${esc(d.user.id)}">
-      ${avatar(d.user, 'sm')}<span class="col"><span class="n">${esc(d.user.name)}</span>${prev ? `<span class="p ${d.inCall ? 'incall' : ''}">${esc(prev)}</span>` : ''}</span>
+      ${avatar(d.user, 'sm')}<span class="col"><span class="n">${esc(d.user.name)}</span>${prev ? `<span class="p ${d.inCall ? 'incall' : ''}">${esc(prev)}</span>` : ''}</span>${unreadOf(cid) ? `<span class="cnt">${badgeTxt(unreadOf(cid))}</span>` : ''}
       <span class="icon-btn x" data-close-dm="${esc(d.user.id)}" title="Fechar conversa">${I.x}</span></button>`;
   }).join('');
   list.querySelector('#dm-friends').onclick = openFriends;
@@ -1560,12 +1617,12 @@ async function joinCall(cid) {
   call.joining = true;
   ensureAudioCtx();
   try {
-    const s = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
-    call.micTrack = s.getAudioTracks()[0];
+    call.micTrack = await acquireMic();
     call.micTrack.enabled = call.micOn;
   } catch (e) {
     toast('Não consegui acessar o microfone. Você entrou sem áudio.', 4500);
   }
+  if (!S.iceAt || Date.now() - S.iceAt > 6 * 3600e3) await loadIce();
   const r = await emit('voice:join', { channelId: cid, dev: deviceName() });
   call.joining = false;
   if (r.error) { toast(r.error); stopLocalTracks(); return; }
@@ -1627,6 +1684,7 @@ function stopKeepAlive() {
 
 function leaveCall() {
   if (!call.channelId) return;
+  SFX.stop('back');
   const was = call.channelId;
   call.rejoin = null;
   call.fmute = false;
@@ -1662,6 +1720,24 @@ function stopLocalTracks() {
   call.micTrack = call.camTrack = call.screenTrack = call.screenAudioTrack = null;
 }
 
+// Busca os servidores de conexão (as senhas do TURN vencem; renova a cada 6 h)
+async function loadIce() {
+  try { const j = await (await fetch('/api/config', { cache: 'no-store' })).json(); S.ice = j.iceServers; S.hasTurn = !!j.turn; S.iceAt = Date.now(); } catch {}
+}
+// Ausente automático: 10 min sem mexer no aparelho
+const AWAY_MS = 10 * 60e3;
+const away = { last: Date.now(), on: false };
+function markActive() {
+  away.last = Date.now();
+  if (away.on) { away.on = false; S.socket?.emit('presence:away', { away: false }); }
+}
+['mousemove', 'keydown', 'pointerdown', 'touchstart', 'wheel'].forEach(ev => document.addEventListener(ev, markActive, { passive: true }));
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') markActive(); });
+setInterval(() => {
+  // falando na chamada também conta como estar usando
+  if (call.channelId && call.micOn && speakState.get('me')) away.last = Date.now();
+  if (!away.on && Date.now() - away.last > AWAY_MS) { away.on = true; S.socket?.emit('presence:away', { away: true }); }
+}, 15e3);
 function deviceName() {
   const ua = navigator.userAgent;
   if (window.NexoNative || /Android/i.test(ua)) return /Tablet|SM-T|Tab/i.test(ua) ? 'Tablet' : 'Celular';
@@ -1725,6 +1801,7 @@ function toggleDeaf() {
   if (call.fdeaf) return toast('Um moderador desativou o seu áudio nesta sala.');
   call.deaf = !call.deaf;
   if (call.deaf) { call.micOn = false; if (call.micTrack) call.micTrack.enabled = false; }
+  SFX.play(call.deaf ? 'deafen' : 'undeafen');
   applyAllVolumes();
   sendState(); renderControls(); renderCallbar(); renderTiles();
 }
@@ -1802,6 +1879,10 @@ function createPC(peer) {
     const st = pc.connectionState;
     if (st === 'connected') { tunePeerSenders(peer); if (peer.watched) { S.socket.emit('voice:watch', { to: peer.sid, on: true }); requestQuality(peer); } }
     if (st === 'failed' && peer.caller) { try { pc.restartIce(); } catch {} }
+    if (st === 'failed' && !S.hasTurn && !call.warnedTurn) {
+      call.warnedTurn = true;
+      toast(`Não deu para conectar com ${nameOf(peer.userId, peer.username)}: a internet de um de vocês bloqueia a conexão direta (comum no 4G). O dono do site precisa ativar um servidor TURN.`, 9000);
+    }
     const tile = document.getElementById('t-cam-' + peer.sid);
     if (tile) {
       let c = tile.querySelector('.conn');
@@ -1869,6 +1950,7 @@ function onPeerState(p) {
   renderPeerTiles(peer);
   // a transmissão acabou: na próxima vez, a pessoa escolhe de novo se quer assistir
   if (wasScreen && !peer.state.screen) peer.watched = false;
+  if (!wasScreen && peer.state.screen) SFX.play('live');
   if (!wasScreen && peer.state.screen) toast(`${nameOf(peer.userId, peer.username)} começou a transmitir. Toque em "Assistir" para ver.`, 4500);
 }
 
@@ -1944,7 +2026,7 @@ function watchStream(peer, on) {
   const id = 't-scr-' + peer.sid;
   if (on) {
     requestQuality(peer);
-    if (!call.pinned) call.pinned = id;
+    call.pinned = id;
     playSafe(peer.screenAudio);
   } else {
     if (call.pinned === id) call.pinned = null;
@@ -1970,8 +2052,7 @@ async function toggleMic() {
   if (call.deaf && !call.micOn) { call.deaf = false; applyAllVolumes(); }
   if (!call.micTrack) {
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
-      call.micTrack = s.getAudioTracks()[0];
+      call.micTrack = await acquireMic();
       call.micOn = true;
       setTrackForAll(0, call.micTrack);
       attachMeter('me', call.micTrack);
@@ -1981,6 +2062,7 @@ async function toggleMic() {
     call.micTrack.enabled = call.micOn;
   }
   store.set('nexo_mic', call.micOn ? '1' : '0');
+  SFX.play(call.micOn ? 'unmute' : 'mute');
   sendState(); renderControls(); renderCallbar(); renderLocalTiles();
 }
 
@@ -2215,17 +2297,20 @@ function ensureTile(id, who, isScreen) {
   t.innerHTML = `<video autoplay playsinline muted></video><div class="ph">${avatar(who, 'nodot')}</div>
     <div class="tag"><span></span></div><button class="icon-btn fs" title="Tela cheia">${I.expand}</button>
     <button class="icon-btn menu hidden" title="Opções">${I.more}</button>
-    ${isScreen ? `<div class="wcard hidden"><div class="wlive">AO VIVO</div><div class="wname"></div>
+    ${isScreen ? `<button class="icon-btn cine-min" title="Sair do modo cinema (Esc)">${I.grid}</button>
+      <div class="wcard hidden"><div class="wlive">AO VIVO</div><div class="wname"></div>
       <button class="btn primary wbtn">${I.eye}Assistir</button></div>
       <button class="icon-btn wclose hidden" title="Parar de assistir">${I.x}</button>` : ''}`;
   t.onclick = e => {
-    if (e.target.closest('.fs, .wclose, .wbtn')) return;
+    if (e.target.closest('.fs, .wclose, .wbtn, .cine-min')) return;
+    if (document.body.classList.contains('cinema') && t.classList.contains('pinned')) return;   // no cinema, clicar na imagem não sai
     if (t.classList.contains('unwatched')) { watchStream(t._peer, true); return; }
     call.pinned = call.pinned === id ? null : id;
     layoutTiles();
   };
   t.querySelector('.wbtn')?.addEventListener('click', e => { e.stopPropagation(); watchStream(t._peer, true); });
   t.querySelector('.wclose')?.addEventListener('click', e => { e.stopPropagation(); watchStream(t._peer, false); });
+  t.querySelector('.cine-min')?.addEventListener('click', e => { e.stopPropagation(); call.pinned = null; layoutTiles(); });
   t.querySelector('.fs').onclick = e => { e.stopPropagation(); goFullscreen(t); };
   t.querySelector('.menu').onclick = e => {
     e.stopPropagation();
@@ -2412,6 +2497,7 @@ function openPeerMenu(peer, isScreen, x, y) {
     if (!it) return;
     const a = it.dataset.a;
     if (a === 'mute0') {
+      SFX.play(v.mic === 0 ? 'unmute' : 'mute');      // silenciar só para mim: só eu ouço
       setVolume(uid, 'mic', v.mic === 0 ? 100 : 0);
       closeCtx(); renderTiles();
       return;
@@ -2431,7 +2517,34 @@ function layoutTiles() {
   box.classList.toggle('has-pin', !!call.pinned);
   [...box.children].forEach(t => t.classList.toggle('pinned', t.id === call.pinned));
   if (call.pinned) { const p = document.getElementById(call.pinned); if (box.firstChild !== p) box.prepend(p); }
+  updateCinema();
 }
+// Modo cinema: assistindo a transmissão de alguém (fixada), ela ocupa o app todo
+const cine = { timer: null };
+function updateCinema() {
+  const t = call.pinned && document.getElementById(call.pinned);
+  const on = !!(call.channelId && S.view === 'voice' && t && t.classList.contains('screen') && !t.classList.contains('unwatched') && t.id !== 't-scr-me');
+  const was = document.body.classList.contains('cinema');
+  document.body.classList.toggle('cinema', on);
+  if (!on) { document.body.classList.remove('cine-idle'); clearTimeout(cine.timer); }
+  else if (!was) cineWake();
+}
+function cineWake() {
+  document.body.classList.remove('cine-idle');
+  clearTimeout(cine.timer);
+  if (!document.body.classList.contains('cinema')) return;
+  cine.timer = setTimeout(() => {
+    // não esconde enquanto o mouse está em cima dos botões ou com um menu aberto
+    if (document.querySelector('#controls:hover, .tile.pinned .menu:hover, .tile.pinned .wclose:hover, .tile.pinned .cine-min:hover') || !$('#ctx').classList.contains('hidden')) return cineWake();
+    document.body.classList.add('cine-idle');
+  }, 2600);
+}
+['mousemove', 'pointerdown', 'keydown', 'touchstart', 'wheel'].forEach(ev => document.addEventListener(ev, () => { if (document.body.classList.contains('cinema')) cineWake(); }, { passive: true }));
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && document.body.classList.contains('cinema') && !document.fullscreenElement && $('#modal').classList.contains('hidden') && $('#ctx').classList.contains('hidden')) {
+    call.pinned = null; layoutTiles();
+  }
+});
 
 function goFullscreen(tile) {
   const v = tile.querySelector('video');
@@ -2495,21 +2608,9 @@ $('#unlock-audio').onclick = () => {
   blocked.clear();
   $('#unlock-audio').classList.add('hidden');
 };
-function playJoinSound(join) {
-  try {
-    ensureAudioCtx();
-    const ctx = call.audioCtx; if (!ctx) return;
-    const o = ctx.createOscillator(), g = ctx.createGain();
-    o.type = 'sine';
-    const t0 = ctx.currentTime;
-    o.frequency.setValueAtTime(join ? 520 : 660, t0);
-    o.frequency.linearRampToValueAtTime(join ? 780 : 440, t0 + 0.15);
-    g.gain.setValueAtTime(0.0001, t0);
-    g.gain.exponentialRampToValueAtTime(0.12, t0 + 0.02);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.25);
-    o.connect(g).connect(ctx.destination);
-    o.start(t0); o.stop(t0 + 0.3);
-  } catch {}
+// eu entrei/saí (som cheio) ou outra pessoa entrou/saiu (som curto)
+function playJoinSound(join, peer) {
+  SFX.play(peer ? (join ? 'peerJoin' : 'peerLeave') : (join ? 'join' : 'leave'));
 }
 
 // Mantem a tela do celular ligada durante a chamada
@@ -2519,7 +2620,7 @@ async function requestWakeLock() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'visible') {
     if (call.channelId && !call.wakeLock) requestWakeLock();
-    if (S.cid && S.view === 'chat' && S.unread.delete(S.cid)) { renderRail(); renderChannels(); }
+    if (S.cid && S.view === 'chat' && markRead(S.cid)) { renderRail(); renderChannels(); }
   } else {
     call.wakeLock = null;
   }
@@ -2574,46 +2675,31 @@ async function startDmCall(peerId, withCam) {
   if (call.channelId !== cid) return;
   if (withCam && !call.camTrack) await toggleCam();
   const alone = call.peers.size === 0;
+  if (alone) SFX.ringback();
   toast(alone ? `Chamando ${who}…` : `Você entrou na ligação com ${who}.`);
 }
 
-// Toque de chamada (dois bipes a cada 2,5 s)
+// Toque de ligação: melodia alta (no "Não perturbar" a ligação aparece sem tocar)
+const isDnd = () => S.user?.presence === 'dnd';
 function startRing() {
   stopRingSound();
-  ensureAudioCtx();
-  const beep = () => {
-    const ctx = call.audioCtx;
-    if (!ctx) return;
-    [0, 0.4].forEach(off => {
-      const o = ctx.createOscillator(), g = ctx.createGain(), t0 = ctx.currentTime + off;
-      o.type = 'sine';
-      o.frequency.setValueAtTime(880, t0);
-      g.gain.setValueAtTime(0.0001, t0);
-      g.gain.exponentialRampToValueAtTime(0.14, t0 + 0.03);
-      g.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.32);
-      o.connect(g).connect(ctx.destination);
-      o.start(t0); o.stop(t0 + 0.36);
-      ring.nodes.push(o);
-    });
-  };
-  beep();
-  ring.timer = setInterval(beep, 2500);
+  if (isDnd()) return;
+  SFX.ring();
 }
-function stopRingSound() {
-  clearInterval(ring.timer);
-  ring.timer = null;
-  ring.nodes.forEach(o => { try { o.stop(); } catch {} });
-  ring.nodes = [];
-}
+function stopRingSound() { SFX.stop('ring'); }
 
 function showIncoming(channelId, from) {
   cacheUser(from);
   ring.channelId = channelId;
   startRing();
-  try { navigator.vibrate?.([400, 300, 400, 300, 400]); } catch {}
-  modal(`<div class="ring-card">${avatar(from, 'xl')}
+  const quiet = isDnd();
+  if (!quiet) try { navigator.vibrate?.([500, 250, 500, 250, 500, 250, 500]); } catch {}
+  const room = call.channelId && !callIsDm() ? findChannel(call.channelId) : null;
+  modal(`<div class="ring-card${quiet ? '' : ' ringing'}">${avatar(from, 'xl')}
       <h3>${esc(from.name)}</h3>
       <p class="muted">está te ligando…</p>
+      ${room ? `<p class="ring-note">Se atender, você sai da sala <b>${esc(room.c.name)}</b> e vai para a ligação.</p>` : ''}
+      ${quiet ? '<p class="ring-note">Não perturbar: tocando no silencioso.</p>' : ''}
       <div class="ring-acts">
         <button class="cbtn leave" id="rg-no" title="Recusar">${I.phoneOff}</button>
         <button class="cbtn answer" id="rg-yes" title="Atender">${I.phone}</button>
@@ -2627,7 +2713,7 @@ function showIncoming(channelId, from) {
   });
   // notificação do sistema, caso o app esteja em segundo plano
   try {
-    if (document.visibilityState !== 'visible' && 'Notification' in window && Notification.permission === 'granted') {
+    if (!quiet && document.visibilityState !== 'visible' && 'Notification' in window && Notification.permission === 'granted') {
       const n = new Notification(`${from.name} está te ligando`, { body: 'Toque para atender', icon: '/icons/icon-192.png', tag: 'ring' });
       n.onclick = () => { window.focus(); n.close(); };
     }
@@ -2642,13 +2728,14 @@ function stopIncoming() {
 // Menu do próprio usuário (clique no seu nome, embaixo à esquerda)
 // ---------------------------------------------------------------------
 const PRESENCE_LABEL = { online: 'Disponível', idle: 'Ausente', dnd: 'Não perturbar', invisible: 'Invisível' };
+const PRESENCE_HELP = { online: 'Fica ausente sozinho depois de 10 min parado', idle: 'Mostra que você saiu um pouco', dnd: 'Sem avisos; ligações chegam sem tocar', invisible: 'Aparece offline, mas recebe tudo' };
 function openMeMenu(anchor) {
   const u = S.user, cur = u.presence || 'online';
   ctx.innerHTML = `<div class="me-card">${avatar(u, 'sm')}<span class="col"><b>${esc(u.name)}</b><span>@${esc(u.username)}</span></span></div>
     <button class="item" data-a="profile">${I.users}Ver meu perfil</button>
     <button class="item" data-a="edit">${I.edit}Editar perfil</button>
     <div class="sep"></div>
-    ${Object.entries(PRESENCE_LABEL).map(([k, v]) => `<button class="item" data-p="${k}"><i class="pres ${k === 'invisible' ? 'offline' : k}"></i>${v}${k === cur ? '<span class="sub">✓</span>' : ''}</button>`).join('')}
+    ${Object.entries(PRESENCE_LABEL).map(([k, v]) => `<button class="item pres-item" data-p="${k}"><i class="pres ${k === 'invisible' ? 'offline' : k}"></i><span class="col"><span>${v}${k === cur ? ' ✓' : ''}</span><small>${PRESENCE_HELP[k]}</small></span></button>`).join('')}
     <div class="sep"></div>
     <button class="item" data-a="settings">${I.gear}Configurações</button>
     <button class="item" data-a="copy">${I.copy}Copiar ID do usuário</button>
@@ -2673,7 +2760,7 @@ function openMeMenu(anchor) {
     if (a === 'logout') confirmModal('Sair da conta?', 'Você poderá entrar de novo quando quiser.', 'Sair', logout);
   };
   const r = anchor.getBoundingClientRect();
-  placeCtx(r.left, r.top - 330);
+  placeCtx(r.left, r.top - 420);
 }
 
 // ---------------------------------------------------------------------
