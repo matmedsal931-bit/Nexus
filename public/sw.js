@@ -1,8 +1,9 @@
 // Service worker: instala o Nexo como app e mostra a nossa tela de carregamento
 // (com a logo) enquanto o servidor acorda, no lugar da página do Render.
-const CACHE = 'nexo-v9';
-const SHELL = ['/', '/index.html', '/style.css', '/app.js', '/settings.js', '/manifest.json',
-  '/loading.html', '/icons/icon-192.png'];
+const CACHE = 'nexo-v13';
+const SHELL = ['/', '/index.html', '/style.css', '/app.js', '/settings.js', '/features.js', '/account.js', '/manifest.json',
+  '/loading.html', '/icons/icon-192.png', '/icons/icon-512.png',
+  '/fonts/onest-latin.woff2', '/fonts/onest-latin-ext.woff2', '/fonts/bricolage-latin.woff2', '/fonts/bricolage-latin-ext.woff2'];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting()));

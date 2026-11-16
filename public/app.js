@@ -57,6 +57,13 @@ const I = {
   head: P('<path d="M3 14v-2a9 9 0 0 1 18 0v2"/><rect x="2" y="13" width="5" height="8" rx="2"/><rect x="17" y="13" width="5" height="8" rx="2"/>'),
   headOff: P('<path d="m2 2 20 20"/><path d="M3 14v-2a9 9 0 0 1 14.6-7"/><path d="M21 14v-2a8.9 8.9 0 0 0-.8-3.7"/><rect x="2" y="13" width="5" height="8" rx="2"/><path d="M17 13h3a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-1"/>'),
   phone: P('<path d="M22 16.9v3a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .3 1.9.6 2.8a2 2 0 0 1-.5 2.1L7.9 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.5 2.8.6a2 2 0 0 1 1.7 2z"/>'),
+  search: P('<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>'),
+  bell: P('<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/>'),
+  bellOff: P('<path d="M13.7 21a2 2 0 0 1-3.4 0M18.6 13A17.9 17.9 0 0 1 18 8M6.3 6.3A6 6 0 0 0 6 8c0 7-3 9-3 9h14M18 8a6 6 0 0 0-9.3-5M2 2l20 20"/>'),
+  crown: P('<path d="M3 8l4.5 3.5L12 5l4.5 6.5L21 8l-2 11H5z"/>'),
+  eye: P('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
+  vol2: P('<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/>'),
+  volX: P('<path d="M11 5 6 9H2v6h4l5 4V5z"/><path d="m22 9-6 6M16 9l6 6"/>'),
   folder: P('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2zM12 11v6M9 14h6"/>'),
 };
 
@@ -121,7 +128,7 @@ function emojiHtml(e, g = curGroup()) {
 }
 function richText(t) {
   const g = curGroup();
-  const html = linkify(t);
+  const html = typeof mentionHtml === 'function' ? mentionHtml(linkify(t)) : linkify(t);
   if (!g?.emojis?.length) return html;
   return html.replace(/:([a-z0-9_]{2,24}):/g, (all, n) => { const ce = g.emojis.find(x => x.name === n); return ce ? cemojiImg(g, ce) : all; });
 }
@@ -205,6 +212,9 @@ document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () =>
   authMode = t.dataset.mode;
   document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
   $('#auth-submit').textContent = authMode === 'login' ? 'Entrar' : 'Criar conta';
+  $('#auth-title').textContent = authMode === 'login' ? 'Entrar' : 'Criar conta';
+  $('#auth-sub').textContent = authMode === 'login' ? 'Use o seu nome de usuário e senha.' : 'Escolha um nome de usuário (é o seu login) e uma senha de pelo menos 6 caracteres.';
+  $('#auth-foot').textContent = authMode === 'login' ? 'Ainda não tem conta? Toque em "Criar conta" acima.' : 'Já tem conta? Toque em "Entrar" acima.';
   $('#auth-pass').autocomplete = authMode === 'login' ? 'current-password' : 'new-password';
   $('#auth-error').textContent = '';
 }));
@@ -272,6 +282,7 @@ function connect() {
     if (S.gid !== '@me' && !group(S.gid)) S.gid = S.groups[0]?.id || (S.dms.length ? '@me' : null);
     // recarrega historico apos reconectar
     S.msgs = {};
+    S.more = {};
     renderAll();
     if (S.view !== 'voice' || !call.channelId) openDefaultChannel();
     else if (S.cid) loadHistory(S.cid);
@@ -310,14 +321,20 @@ function connect() {
 
   sock.on('message', ({ groupId, channelId, msg, dm }) => {
     if (S.msgs[channelId]) S.msgs[channelId].push(msg);
+    stopTypingOf(channelId, msg.userId);
     const visible = channelId === S.cid && S.view === 'chat' && document.visibilityState === 'visible';
     if (channelId === S.cid) renderMessages(true);
     if (!visible && msg.userId !== S.user?.id) {
       S.unread.add(channelId);
       renderRail(); renderChannels();
-      if (!msg.sys) notify(msg, dm ? '@me' : groupId, channelId, dm ? msg.userId : null);
+      if (shouldNotify(msg, groupId, dm)) {
+        playNotifySound();
+        notify(msg, dm ? '@me' : groupId, channelId, dm ? msg.userId : null);
+      }
     }
   });
+  sock.on('typing', onTyping);
+  sock.on('session:ended', () => { toast('Sua conta foi desconectada deste aparelho.', 6000); logout(); });
 
   sock.on('profile:me', u => { S.user = u; renderAll(); if (S.cid) renderMessages('keep'); if (call.channelId) renderTiles(); });
   sock.on('friends', f => {
@@ -403,9 +420,9 @@ function connect() {
     if (S.gid === '@me') renderChannels();
     if (S.dmPeer === userId) renderHeader();
   });
-  sock.on('message:edit', ({ channelId, id, text }) => {
+  sock.on('message:edit', ({ channelId, id, text, mentions }) => {
     const m = (S.msgs[channelId] || []).find(x => x.id === id);
-    if (m) { m.text = text; m.edited = true; if (channelId === S.cid) renderMessages('keep'); }
+    if (m) { m.text = text; m.edited = true; m.mentions = mentions || []; if (channelId === S.cid) renderMessages('keep'); }
   });
   sock.on('message:delete', ({ channelId, id }) => {
     const arr = S.msgs[channelId];
@@ -434,6 +451,17 @@ function connect() {
   sock.on('voice:peer-left', ({ sid }) => { if (call.peers.has(sid)) { removePeer(sid); playJoinSound(false); } });
   sock.on('voice:state', p => onPeerState(p));
   sock.on('signal', ({ from, data }) => onSignal(from, data));
+  sock.on('voice:watch', onWatchRequest);
+  // outro aparelho meu mandou ligar/desligar o microfone ou o áudio deste
+  sock.on('voice:self', async ({ action, from }) => {
+    if (!call.channelId) return;
+    if (action === 'mic-off') await setMicOn(false);
+    else if (action === 'mic-on') { if (call.fmute || call.fdeaf) return; if (call.deaf) setDeafOn(false); await setMicOn(true); }
+    else if (action === 'deaf-on') setDeafOn(true);
+    else if (action === 'deaf-off') setDeafOn(false);
+    const what = { 'mic-off': 'desligou o microfone', 'mic-on': 'ligou o microfone', 'deaf-on': 'desativou o áudio', 'deaf-off': 'reativou o áudio' }[action];
+    if (what) toast(`Seu ${from} ${what} deste aparelho.`);
+  });
   sock.on('voice:quality', ({ from, maxH }) => {
     const peer = call.peers.get(from);
     if (!peer) return;
@@ -491,6 +519,7 @@ async function openDM(userId) {
   cacheUser(r.user);
   if (!S.dms.some(x => x.user.id === userId)) S.dms.push({ user: r.user, last: null });
   S.msgs[r.channelId] = r.messages;
+  S.more[r.channelId] = !!r.hasMore;
   S.gid = '@me'; S.dmPeer = userId; S.cid = r.channelId;
   S.unread.delete(r.channelId);
   store.set('nexo_gid', '@me');
@@ -523,7 +552,7 @@ async function loadHistory(cid) {
   if (S.msgs[cid]) { renderMessages(); return; }
   renderMessages();
   const r = await emit('channel:history', { channelId: cid });
-  if (r.messages) { S.msgs[cid] = r.messages; if (S.cid === cid) renderMessages(); }
+  if (r.messages) { S.msgs[cid] = r.messages; S.more[cid] = !!r.hasMore; if (S.cid === cid) renderMessages(); }
 }
 
 function openFriends(tab) {
@@ -539,7 +568,7 @@ let friendTab = 'todos';
 function renderFriends() {
   const el = $('#friends-view');
   const f = S.friends;
-  const tabs = [['todos', `Todos — ${f.friends.length}`], ['pendente', `Pendentes${f.in.length + f.out.length ? ` — ${f.in.length + f.out.length}` : ''}`], ['add', 'Adicionar amigo']];
+  const tabs = [['todos', 'Todos', f.friends.length], ['pendente', 'Pendentes', 0], ['add', 'Adicionar amigo', 0]];
   if (friendTab === 'add') {
     el.innerHTML = tabHtml() + `<h2 style="margin:0">Adicionar amigo</h2>
       <p class="muted" style="margin:0">Adicione pelo <b>nome de usuário</b> (o @, não o nome exibido) ou pelo <b>ID</b>. Não existe busca de pessoas: só encontra quem você já conhece.</p>
@@ -566,8 +595,8 @@ function renderFriends() {
       <span class="acts"><button class="btn sm" data-dm="${esc(u.id)}">Mensagem</button><button class="btn sm" data-prof="${esc(u.id)}">Perfil</button><button class="btn danger sm" data-no="${esc(u.id)}">Remover</button></span></div>`;
     const on = f.friends.filter(u => presOf(u) !== 'offline'), off = f.friends.filter(u => presOf(u) === 'offline');
     el.innerHTML = tabHtml() + (f.friends.length
-      ? (on.length ? `<div class="sec">Online — ${on.length}</div>` + on.map(row).join('') : '')
-        + (off.length ? `<div class="sec">Offline — ${off.length}</div>` + off.map(row).join('') : '')
+      ? (on.length ? `<div class="sec">Online <span class="cnt">${on.length}</span></div>` + on.map(row).join('') : '')
+        + (off.length ? `<div class="sec">Offline <span class="cnt">${off.length}</span></div>` + off.map(row).join('') : '')
       : `<div class="set-empty"><b>Nenhum amigo ainda</b><span>Use a aba "Adicionar amigo" para chamar alguém.</span></div>`);
   }
   el.querySelectorAll('.ftab').forEach(b => b.onclick = () => { friendTab = b.dataset.t; renderFriends(); });
@@ -576,7 +605,7 @@ function renderFriends() {
   el.querySelectorAll('[data-dm]').forEach(b => b.onclick = () => openDM(b.dataset.dm));
   el.querySelectorAll('[data-prof]').forEach(b => b.onclick = () => openProfile(b.dataset.prof));
   function tabHtml() {
-    return `<div class="ftabs">${tabs.map(([k, t]) => `<button class="ftab ${k === friendTab ? 'active' : ''}" data-t="${k}">${esc(t)}${k === 'pendente' && f.in.length ? `<span class="badge">${f.in.length}</span>` : ''}</button>`).join('')}</div>`;
+    return `<div class="ftabs">${tabs.map(([k, t, c]) => `<button class="ftab ${k === friendTab ? 'active' : ''}" data-t="${k}">${esc(t)}${c ? `<span class="cnt">${c}</span>` : ''}${k === 'pendente' && f.in.length ? `<span class="badge">${f.in.length}</span>` : ''}</button>`).join('')}</div>`;
   }
 }
 
@@ -602,6 +631,7 @@ $('#backdrop').onclick = () => { closeDrawer(); if (isMobile()) setMembers(false
 function renderAll() { renderRail(); renderChannels(); renderHeader(); renderUserbar(); renderCallbar(); renderMembers(); }
 
 function renderRail() {
+  if (typeof updateTitle === 'function') updateTitle();
   const rail = $('#rail');
   rail.innerHTML = '';
   const dmUnread = S.dms.some(d => S.unread.has(dmChannelId(d.user.id)));
@@ -683,7 +713,7 @@ function renderChannels() {
     const active = call.channelId === c.id && S.view === 'voice';
     return `<button class="ch ${active ? 'active' : ''}" data-vid="${c.id}" data-ch="${c.id}">${I.speaker}<span class="label">${esc(c.name)}</span>${del(c)}</button>`
       + (people.length ? `<div class="vusers">` + dedupeVoice(people).map(p => `<div class="vuser" data-sid="${esc(p.sid)}" data-uid="${esc(p.userId)}" title="Opções">${avatar(p, 'sm')}<span class="nm">${esc(nameOf(p.userId, p.username))}</span>
-        ${p.screen ? '<span class="live">AO VIVO</span>' : ''}${p.cam ? I.cam : ''}${p.fdeaf || p.deaf ? `<span class="${p.fdeaf ? 'fm' : ''}">${I.headOff}</span>` : ''}${p.fmute ? '<span class="fm">🔇</span>' : (p.mic ? '' : I.micOff)}</div>`).join('') + `</div>` : '');
+        ${p.screen ? '<span class="live">AO VIVO</span>' : ''}${p.cam ? I.cam : ''}${p.fdeaf || p.deaf ? `<span class="${p.fdeaf ? 'fm' : ''}">${I.headOff}</span>` : ''}${p.fmute ? `<span class="fm">${I.micOff}</span>` : (p.mic ? '' : I.micOff)}</div>`).join('') + `</div>` : '');
   };
   const add = (type, cat = '') => canCh ? `<button class="icon-btn" data-add="${type}" data-cat="${cat}" title="Criar canal">${I.plus}</button>` : '';
   const cats = g.categories || [];
@@ -762,7 +792,7 @@ function openChannelMenu(cid, x, y) {
   if (!f) return;
   const g = f.g, canCh = can(g, 'manageChannels');
   const cats = g.categories || [];
-  ctx.innerHTML = `<div class="vol-h">${f.c.type === 'voice' ? '🔊' : '#'} ${esc(f.c.name)}</div>
+  ctx.innerHTML = `<div class="vol-h ic">${f.c.type === 'voice' ? I.speaker : I.hash} ${esc(f.c.name)}</div>
     ${f.c.type === 'text' ? `<button class="item" data-a="open">${I.hash}Abrir canal</button>` : `<button class="item" data-a="join">${I.speaker}Entrar na sala</button>`}
     ${canCh && cats.length ? `<div class="vol-h">Mover para categoria</div>
       ${[{ id: '', name: 'Sem categoria' }, ...cats].map(c => `<button class="item" data-cat="${esc(c.id)}">${I.folder}${esc(c.name)}${(f.c.cat || '') === c.id ? '<span class="sub">✓</span>' : ''}</button>`).join('')}` : ''}
@@ -881,6 +911,16 @@ function findUserModal() {
 }
 
 function renderHeader() {
+  renderHeaderMain();
+  if (S.view === 'chat' && S.cid) {
+    const b = document.createElement('button');
+    b.className = 'icon-btn'; b.title = 'Pesquisar mensagens (Ctrl+F)'; b.innerHTML = I.search;
+    b.onclick = openSearch;
+    $('#head-actions').prepend(b);
+  }
+  if (typeof renderTyping === 'function') renderTyping();
+}
+function renderHeaderMain() {
   const t = $('#main-title'), a = $('#head-actions');
   a.innerHTML = '';
   if (S.gid === '@me' && S.view === 'friends') { t.innerHTML = `<span class="dm-head">${I.users}<span>Amigos</span></span>`; return; }
@@ -964,21 +1004,21 @@ function renderMembers() {
   const off = g.members.filter(m => !(m.online || m.id === S.user.id)).sort(byName);
   const row = (m, isOn) => {
     const v = inVoice.get(m.id);
-    const st = v ? `<div class="st voice">${v.screen ? '📺 Transmitindo' : '🔊 Em voz'} · ${esc(v.name)}</div>` : (m.status ? `<div class="st">${esc(m.status)}</div>` : '');
+    const st = v ? `<div class="st voice">${v.screen ? I.screen + 'Transmitindo em' : I.speaker + 'Em voz:'} ${esc(v.name)}</div>` : (m.status ? `<div class="st">${esc(m.status)}</div>` : '');
     return `<div class="mem ${isOn ? 'on' : 'off'}" data-uid="${esc(m.id)}"><div class="avw">${avatar(m, 'sm')}</div>
-      <div class="info"><div class="n" style="color:${isOn ? esc(nameColor(m.id, m.color, g)) : 'inherit'}">${esc(m.name)}${m.id === g.ownerId ? ' 👑' : ''}</div>${st}</div></div>`;
+      <div class="info"><div class="n" style="color:${isOn ? esc(nameColor(m.id, m.color, g)) : 'inherit'}">${esc(m.name)}${m.id === g.ownerId ? `<i class="crown" title="Dono do grupo">${I.crown}</i>` : ''}</div>${st}</div></div>`;
   };
-  el.innerHTML = `<div class="sec">Online — ${on.length}</div>${on.map(m => row(m, true)).join('')}`
-    + (off.length ? `<div class="sec">Offline — ${off.length}</div>${off.map(m => row(m, false)).join('')}` : '');
+  el.innerHTML = `<div class="sec">Online <span class="cnt">${on.length}</span></div>${on.map(m => row(m, true)).join('')}`
+    + (off.length ? `<div class="sec">Offline <span class="cnt">${off.length}</span></div>${off.map(m => row(m, false)).join('')}` : '');
 }
 
 function renderUserbar() {
   if (!S.user) return;
   $('#userbar').innerHTML = `<button class="me-btn" id="ub-me" title="Meu perfil e status">${avatar(S.user, 'sm')}<span class="col"><span class="nm">${esc(S.user.name)}</span><span class="sub">${esc(S.user.status || '@' + S.user.username)}</span></span></button>
-    ${S.installEvt ? `<button class="icon-btn install-btn" id="ub-install" title="Instalar o app neste aparelho">${I.download}</button>` : ''}<button class="icon-btn" id="ub-logout" title="Sair da conta">${I.logout}</button>`;
+    ${S.installEvt ? `<button class="icon-btn install-btn" id="ub-install" title="Instalar o app neste aparelho">${I.download}</button>` : ''}<button class="icon-btn" id="ub-gear" title="Configurações">${I.gear}</button>`;
   $('#ub-install')?.addEventListener('click', installApp);
   $('#ub-me').onclick = e => openMeMenu(e.currentTarget);
-  $('#ub-logout').onclick = () => confirmModal('Sair da conta?', 'Você poderá entrar de novo quando quiser.', 'Sair', logout);
+  $('#ub-gear').onclick = () => openAccount();
 }
 
 function renderCallbar() {
@@ -1031,9 +1071,10 @@ function msgHtml(m, grouped) {
   const body = (m.text ? `<div class="msg-text">${richText(m.text)}${m.edited ? ' <span class="edited">(editado)</span>' : ''}</div>` : '') + attHtml(m.att);
   const text = body + reacts;
   const tools = `<div class="msg-tools"><button data-t="react" title="Reagir">${I.smile}</button><button data-t="reply" title="Responder">${I.reply}</button><button data-t="more" title="Mais">${I.more}</button></div>`;
-  if (!grouped) return `<div class="msg first" data-id="${esc(m.id)}">${avatar(m)}<div class="msg-body">${reply}<div class="msg-head">
+  const mc = typeof mentionsMe === 'function' && mentionsMe(m) ? ' mentioned' : '';
+  if (!grouped) return `<div class="msg first${mc}" data-id="${esc(m.id)}">${avatar(m)}<div class="msg-body">${reply}<div class="msg-head">
     <span class="msg-author" style="color:${esc(nameColor(m.userId, m.color))}">${esc(nameOf(m.userId, m.username))}</span><span class="msg-time">${fmtDate(m.ts)}</span></div>${text}</div>${tools}</div>`;
-  return `<div class="msg" data-id="${esc(m.id)}"><div class="gutter">${fmtTime(m.ts)}</div><div class="msg-body">${text}</div>${tools}</div>`;
+  return `<div class="msg${mc}" data-id="${esc(m.id)}"><div class="gutter">${fmtTime(m.ts)}</div><div class="msg-body">${text}</div>${tools}</div>`;
 }
 
 // mode: undefined = abre no fim | true = chegou mensagem nova | 'keep' = mantem a rolagem
@@ -1044,7 +1085,9 @@ function renderMessages(mode) {
   const f = findChannel(S.cid);
   const msgs = S.msgs[S.cid];
   const peer = S.gid === '@me' && S.dmPeer ? userById(S.dmPeer) : null;
-  let html = peer
+  let html = S.more[S.cid]
+    ? `<div class="older"><button class="btn sm" id="load-older">Ver mensagens antigas</button></div>`
+    : peer
     ? `<div class="welcome">${avatar(peer, 'xl nodot')}<h2>${esc(peer.name)}</h2>
        <p class="muted">@${esc(peer.username)} — este é o começo da sua conversa privada.</p></div>`
     : `<div class="welcome"><div class="big-ic">${I.hash}</div><h2>Bem-vindo a #${esc(f?.c.name || '')}!</h2>
@@ -1299,6 +1342,7 @@ input.addEventListener('paste', e => {
 })();
 
 async function sendMessage() {
+  lastTypingSent = 0;
   const text = input.value.trim();
   if (!S.cid) return;
   if (S.atts.some(a => a.up)) return toast('Espere o arquivo terminar de enviar.');
@@ -1498,6 +1542,9 @@ const APK_LATEST = 4;                         // aumente quando publicar um APK 
 const IS_ANDROID = /Android/i.test(navigator.userAgent);
 const canShareScreen = () => !!NATIVE || !!navigator.mediaDevices?.getDisplayMedia;
 const localTracks = () => [call.micTrack, call.camTrack, call.screenTrack, call.screenAudioTrack];
+// O que mandar para uma pessoa: a tela só vai para quem pediu para assistir
+const localTracksFor = peer => [call.micTrack, call.camTrack,
+  peer.watching ? call.screenTrack : null, peer.watching ? call.screenAudioTrack : null];
 
 async function joinCall(cid) {
   closeDrawer();
@@ -1513,13 +1560,13 @@ async function joinCall(cid) {
   call.joining = true;
   ensureAudioCtx();
   try {
-    const s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+    const s = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
     call.micTrack = s.getAudioTracks()[0];
     call.micTrack.enabled = call.micOn;
   } catch (e) {
     toast('Não consegui acessar o microfone. Você entrou sem áudio.', 4500);
   }
-  const r = await emit('voice:join', { channelId: cid });
+  const r = await emit('voice:join', { channelId: cid, dev: deviceName() });
   call.joining = false;
   if (r.error) { toast(r.error); stopLocalTracks(); return; }
   call.channelId = cid;
@@ -1535,11 +1582,8 @@ async function joinCall(cid) {
   requestWakeLock();
   startKeepAlive();
   try { NATIVE?.setInCall(true); } catch {}
-  if (r.dupe) {
-    call.micOn = false;
-    if (call.micTrack) call.micTrack.enabled = false;
-    toast('Você já está nesta sala em outro aparelho. O microfone deste aqui entrou desligado, para não dar eco.', 7000);
-  }
+  // Cada aparelho tem o próprio microfone e áudio: entrar com outro aparelho não mexe neste
+  if (r.dupe) toast('Você também está nesta sala em outro aparelho. Cada aparelho tem o próprio microfone e áudio — controle cada um no quadro dele.', 7000);
   setView('voice');
   renderControls();
   renderCallbar();
@@ -1553,7 +1597,7 @@ async function rejoinCall() {
   const cid = call.rejoin;
   call.rejoin = null;
   if (!cid || !call.channelId) return;
-  const r = await emit('voice:join', { channelId: cid });
+  const r = await emit('voice:join', { channelId: cid, dev: deviceName() });
   if (r.error) { toast('Não consegui voltar para a chamada: ' + r.error); leaveCall(); return; }
   call.mySid = r.sid;
   sendState();
@@ -1618,6 +1662,23 @@ function stopLocalTracks() {
   call.micTrack = call.camTrack = call.screenTrack = call.screenAudioTrack = null;
 }
 
+function deviceName() {
+  const ua = navigator.userAgent;
+  if (window.NexoNative || /Android/i.test(ua)) return /Tablet|SM-T|Tab/i.test(ua) ? 'Tablet' : 'Celular';
+  if (/iPhone/i.test(ua)) return 'iPhone';
+  if (/iPad/i.test(ua)) return 'iPad';
+  return 'Computador';
+}
+// Liga/desliga o microfone ou o áudio DESTE aparelho (sem alternar às cegas)
+async function setMicOn(on) { if (!!(call.micTrack && call.micOn) !== on) await toggleMic(); }
+function setDeafOn(on) { if (!!call.deaf !== on) toggleDeaf(); }
+// Meus outros aparelhos na mesma chamada
+const myOtherDevices = () => [...call.peers.values()].filter(p => p.userId === S.user?.id);
+async function controlMyDevice(peer, action) {
+  const r = await emit('voice:self', { sid: peer.sid, action });
+  if (r?.error) toast(r.error);
+}
+
 function sendState() {
   S.socket?.emit('voice:state', { mic: !!call.micTrack && call.micOn && !isDeaf(), cam: !!call.camTrack, screen: !!call.screenTrack, deaf: isDeaf() });
 }
@@ -1627,10 +1688,12 @@ function addPeer(p) {
   let peer = call.peers.get(p.sid);
   if (peer) return peer;
   peer = {
-    sid: p.sid, userId: p.userId, username: p.username, color: p.color,
+    sid: p.sid, userId: p.userId, username: p.username, color: p.color, dev: p.dev || '',
     state: { mic: !!p.mic, cam: !!p.cam, screen: !!p.screen, deaf: !!p.deaf, fmute: !!p.fmute, fdeaf: !!p.fdeaf },
     chain: Promise.resolve(), caller: false,
     camStream: new MediaStream(), screenStream: new MediaStream(),
+    watching: false,   // essa pessoa está assistindo a MINHA tela
+    watched: false,    // EU estou assistindo a tela dessa pessoa
     wantH: 0,   // resolução que ESTE espectador me pediu (quando eu transmito)
     micAudio: makeAudioEl(), screenAudio: makeAudioEl(), micGain: null, screenGain: null,
   };
@@ -1693,6 +1756,7 @@ function makeAudioEl() {
   const a = document.createElement('audio');
   a.autoplay = true;
   a.playsInline = true;
+  applySink(a);
   $('#audio-sink').appendChild(a);
   return a;
 }
@@ -1736,7 +1800,7 @@ function createPC(peer) {
   };
   pc.onconnectionstatechange = () => {
     const st = pc.connectionState;
-    if (st === 'connected') { tunePeerSenders(peer); requestQuality(peer); }
+    if (st === 'connected') { tunePeerSenders(peer); if (peer.watched) { S.socket.emit('voice:watch', { to: peer.sid, on: true }); requestQuality(peer); } }
     if (st === 'failed' && peer.caller) { try { pc.restartIce(); } catch {} }
     const tile = document.getElementById('t-cam-' + peer.sid);
     if (tile) {
@@ -1764,7 +1828,7 @@ function startAsCaller(peer) {
       S.socket.emit('signal', { to: peer.sid, data: { sdp: pc.localDescription } });
     }).catch(e => console.error('offer', e));
   };
-  const local = localTracks();
+  const local = localTracksFor(peer);
   ['audio', 'video', 'video', 'audio'].forEach((kind, i) => pc.addTransceiver(local[i] || kind, { direction: 'sendrecv' }));
 }
 
@@ -1780,11 +1844,11 @@ function onSignal(from, data) {
     if (data.sdp) {
       if (data.sdp.type === 'offer') {
         await pc.setRemoteDescription(data.sdp);
-        const local = localTracks();
+        const local = localTracksFor(peer);
         const txs = pc.getTransceivers();
         for (let i = 0; i < txs.length && i < 4; i++) {
           txs[i].direction = 'sendrecv';
-          if (local[i] && txs[i].sender.track !== local[i]) await txs[i].sender.replaceTrack(local[i]);
+          if (txs[i].sender.track !== (local[i] || null) && (local[i] || i >= 2)) await txs[i].sender.replaceTrack(local[i] || null);
         }
         await pc.setLocalDescription(await pc.createAnswer());
         S.socket.emit('signal', { to: from, data: { sdp: pc.localDescription } });
@@ -1803,18 +1867,42 @@ function onPeerState(p) {
   const wasScreen = peer.state.screen;
   peer.state = { mic: !!p.mic, cam: !!p.cam, screen: !!p.screen, deaf: !!p.deaf, fmute: !!p.fmute, fdeaf: !!p.fdeaf };
   renderPeerTiles(peer);
-  if (!wasScreen && peer.state.screen) requestQuality(peer);
-  // Fixa automaticamente quem comecou a transmitir a tela
-  if (!wasScreen && peer.state.screen && !call.pinned) { call.pinned = 't-scr-' + peer.sid; layoutTiles(); }
+  // a transmissão acabou: na próxima vez, a pessoa escolhe de novo se quer assistir
+  if (wasScreen && !peer.state.screen) peer.watched = false;
+  if (!wasScreen && peer.state.screen) toast(`${nameOf(peer.userId, peer.username)} começou a transmitir. Toque em "Assistir" para ver.`, 4500);
 }
 
 // Troca a faixa em todas as conexoes (sem renegociar)
 function setTrackForAll(idx, track) {
   for (const peer of call.peers.values()) {
     const tx = peer.pc.getTransceivers()[idx];
-    if (tx) tx.sender.replaceTrack(track).catch(e => console.warn('replaceTrack', e));
+    const t = idx >= 2 && !peer.watching ? null : track;     // tela: só para quem assiste
+    if (tx && tx.sender.track !== t) tx.sender.replaceTrack(t).catch(e => console.warn('replaceTrack', e));
   }
 }
+// Alguém começou ou parou de assistir a minha transmissão
+function onWatchRequest({ from, on }) {
+  const peer = call.peers.get(from);
+  if (!peer) return;
+  peer.watching = !!on;
+  const txs = peer.pc.getTransceivers();
+  txs[2]?.sender.replaceTrack(on ? call.screenTrack : null).catch(() => {});
+  txs[3]?.sender.replaceTrack(on ? call.screenAudioTrack : null).catch(() => {});
+  if (on && call.screenTrack) tunePeerSenders(peer);
+  renderControls();
+  renderTiles();
+}
+// "AO VIVO" na lista da sala: abre a transmissão daquela pessoa
+document.getElementById('channels').addEventListener('click', e => {
+  const live = e.target.closest('.vuser .live');
+  if (!live) return;
+  e.stopPropagation();
+  const uid = live.closest('.vuser')?.dataset.uid;
+  const peer = [...call.peers.values()].find(p => p.userId === uid && p.state.screen);
+  if (peer) { setView('voice'); closeDrawer(); if (!peer.watched) watchStream(peer, true); }
+  else if (uid === S.user?.id) setView('voice');
+  else toast('Entre na sala de voz para assistir a transmissão.');
+}, true);
 
 // Ajusta bitrate/fps para a tela ficar nitida em Full HD
 async function tuneSender(sender, maxBitrate, maxFramerate, pref, scale = 1) {
@@ -1849,6 +1937,22 @@ function requestQuality(peer) {
   if (!peer || !S.socket?.connected) return;
   S.socket.emit('voice:quality', { to: peer.sid, maxH: recvOf(peer.userId) });
 }
+function watchStream(peer, on) {
+  if (!peer) return;
+  peer.watched = !!on;
+  S.socket?.emit('voice:watch', { to: peer.sid, on: !!on });
+  const id = 't-scr-' + peer.sid;
+  if (on) {
+    requestQuality(peer);
+    if (!call.pinned) call.pinned = id;
+    playSafe(peer.screenAudio);
+  } else {
+    if (call.pinned === id) call.pinned = null;
+    if (document.fullscreenElement?.id === id) document.exitFullscreen().catch(() => {});
+  }
+  renderTiles();
+}
+
 function setRecvQuality(h, uid) {
   if (uid) call.recvOverride.set(uid, h);
   else { call.recvH = h; call.recvOverride.clear(); store.set('nexo_recvh', String(h)); }
@@ -1866,7 +1970,7 @@ async function toggleMic() {
   if (call.deaf && !call.micOn) { call.deaf = false; applyAllVolumes(); }
   if (!call.micTrack) {
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      const s = await navigator.mediaDevices.getUserMedia({ audio: micConstraints() });
       call.micTrack = s.getAudioTracks()[0];
       call.micOn = true;
       setTrackForAll(0, call.micTrack);
@@ -1882,7 +1986,7 @@ async function toggleMic() {
 
 async function getCamera() {
   const s = await navigator.mediaDevices.getUserMedia({
-    video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: call.facing },
+    video: { width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 }, facingMode: call.facing, ...camDeviceConstraint() },
   });
   return s.getVideoTracks()[0];
 }
@@ -1934,8 +2038,11 @@ async function toggleScreen() {
   try {
     s = await navigator.mediaDevices.getDisplayMedia({
       video: { width: { ideal: q.w, max: q.w }, height: { ideal: q.h, max: q.h }, frameRate: { ideal: q.fps, max: q.fps } },
-      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
-      selfBrowserSurface: 'exclude', systemAudio: 'include', surfaceSwitching: 'include',
+      // restrictOwnAudio: tira do som as vozes da chamada (o que o próprio Nexo toca)
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, restrictOwnAudio: true, suppressLocalAudioPlayback: false },
+      selfBrowserSurface: 'exclude', surfaceSwitching: 'include',
+      systemAudio: 'include',   // tela inteira: som do computador
+      windowAudio: 'window',    // uma janela (ex.: o jogo): só o som dela
     });
   } catch (e) {
     if (e.name === 'NotAllowedError' && !/Android/i.test(navigator.userAgent)) return; // usuario cancelou
@@ -1949,11 +2056,36 @@ async function toggleScreen() {
   vt.onended = () => stopScreen();
   call.screenTrack = vt;
   call.screenAudioTrack = s.getAudioTracks()[0] || null;
+  call.screenAudioInfo = describeScreenAudio(vt, call.screenAudioTrack);
+  // Tela inteira sem como tirar as vozes da chamada: começa sem som, para não dar eco na live
+  if (call.screenAudioInfo.risky && call.screenAudioTrack) call.screenAudioTrack.enabled = false;
   setTrackForAll(2, vt);
   setTrackForAll(3, call.screenAudioTrack);
   call.peers.forEach(tunePeerSenders);
   sendState(); renderControls(); renderLocalTiles();
-  toast(`Transmitindo em ${q.label}${call.screenAudioTrack ? ' com áudio' : ''}`);
+  toast(`Transmitindo em ${q.label}. ${call.screenAudioInfo.msg}`, 7000);
+}
+
+// Explica que som está indo para a transmissão
+function describeScreenAudio(vt, at) {
+  const surface = vt.getSettings?.().displaySurface || '';
+  const restricted = at?.getSettings?.().restrictOwnAudio === true;
+  if (!at) {
+    return { kind: 'none', msg: surface === 'window'
+      ? 'Sem som: este navegador não envia o som de uma janela só. Atualize o Chrome ou o Edge, ou transmita a aba.'
+      : 'Sem som. Para enviar o som, marque "Compartilhar áudio" na janela de escolha.' };
+  }
+  if (surface === 'window') return { kind: 'window', msg: 'Indo só o som desta janela.' };
+  if (surface === 'browser') return { kind: 'tab', msg: 'Indo só o som desta aba.' };
+  if (restricted) return { kind: 'system', msg: 'Indo o som do computador, sem as vozes da chamada. Som de outros programas (ex.: Discord) também vai; para mandar só o do jogo, transmita a janela do jogo.' };
+  return { kind: 'system', risky: true, msg: 'O som começou desligado: neste navegador, o som da tela inteira levaria as vozes da chamada junto. Transmita a janela do jogo, ou ligue o som no botão de alto-falante.' };
+}
+function toggleScreenAudio() {
+  const at = call.screenAudioTrack;
+  if (!at) return toast(call.screenAudioInfo?.msg || 'Esta transmissão não tem som.', 5000);
+  at.enabled = !at.enabled;
+  toast(at.enabled ? 'Som da transmissão ligado.' : 'Som da transmissão desligado.');
+  renderControls();
 }
 
 // ---------- Transmissao de tela pelo app Android ----------
@@ -2021,6 +2153,7 @@ function stopScreen() {
   call.screenTrack.stop();
   call.screenAudioTrack?.stop();
   call.screenTrack = call.screenAudioTrack = null;
+  call.screenAudioInfo = null;
   setTrackForAll(2, null);
   setTrackForAll(3, null);
   if (call.pinned === 't-scr-me') call.pinned = null;
@@ -2051,6 +2184,7 @@ function renderControls() {
     <button class="cbtn ${isDeaf() ? 'off' : ''}" data-k="deaf" title="${call.fdeaf ? 'Áudio desativado por um moderador' : call.deaf ? 'Ouvir de novo' : 'Desativar o áudio'}">${isDeaf() ? I.headOff : I.head}</button>
     <button class="cbtn ${call.camTrack ? 'on' : ''}" data-k="cam" title="${call.camTrack ? 'Desligar câmera' : 'Ligar câmera'}">${call.camTrack ? I.cam : I.camOff}</button>
     ${call.camTrack && isMobile() ? `<button class="cbtn" data-k="flip" title="Trocar câmera">${I.flip}</button>` : ''}
+    ${call.screenTrack ? `<button class="cbtn ${call.screenAudioTrack?.enabled ? '' : 'off'}" data-k="saudio" title="${call.screenAudioTrack ? (call.screenAudioTrack.enabled ? 'Som da transmissão: ligado (clique para desligar)' : 'Som da transmissão: desligado (clique para ligar)') : 'Esta transmissão está sem som'}">${call.screenAudioTrack?.enabled ? I.vol2 : I.volX}</button>` : ''}
     <button class="cbtn ${call.screenTrack ? 'on' : ''}" data-k="screen" title="${scrOk ? (call.screenTrack ? 'Parar transmissão' : 'Transmitir tela') : 'Transmissão de tela disponível só no PC'}" ${scrOk ? '' : 'style="opacity:.45"'}>${call.screenTrack ? I.screenOff : I.screen}</button>
     ${scrOk ? `<select class="quality" data-q="res" title="Resolução da transmissão">${Object.keys(RES).map(k => `<option value="${k}" ${k === call.res ? 'selected' : ''}>${k}</option>`).join('')}</select>
     <select class="quality" data-q="fps" title="Quadros por segundo da transmissão">${[60, 30, 15].map(k => `<option value="${k}" ${k === call.fps ? 'selected' : ''}>${k} fps</option>`).join('')}</select>` : ''}
@@ -2060,6 +2194,7 @@ function renderControls() {
   c.querySelector('[data-k=deaf]').onclick = toggleDeaf;
   c.querySelector('[data-k=cam]').onclick = toggleCam;
   c.querySelector('[data-k=screen]').onclick = toggleScreen;
+  c.querySelector('[data-k=saudio]')?.addEventListener('click', toggleScreenAudio);
   c.querySelector('[data-k=leave]').onclick = () => leaveCall();
   c.querySelector('[data-k=flip]')?.addEventListener('click', flipCamera);
   c.querySelectorAll('.quality').forEach(el => el.addEventListener('change', e => {
@@ -2079,12 +2214,18 @@ function ensureTile(id, who, isScreen) {
   t.dataset.uid = who.id ?? who.userId ?? '';
   t.innerHTML = `<video autoplay playsinline muted></video><div class="ph">${avatar(who, 'nodot')}</div>
     <div class="tag"><span></span></div><button class="icon-btn fs" title="Tela cheia">${I.expand}</button>
-    <button class="icon-btn menu hidden" title="Opções">${I.more}</button>`;
+    <button class="icon-btn menu hidden" title="Opções">${I.more}</button>
+    ${isScreen ? `<div class="wcard hidden"><div class="wlive">AO VIVO</div><div class="wname"></div>
+      <button class="btn primary wbtn">${I.eye}Assistir</button></div>
+      <button class="icon-btn wclose hidden" title="Parar de assistir">${I.x}</button>` : ''}`;
   t.onclick = e => {
-    if (e.target.closest('.fs')) return;
+    if (e.target.closest('.fs, .wclose, .wbtn')) return;
+    if (t.classList.contains('unwatched')) { watchStream(t._peer, true); return; }
     call.pinned = call.pinned === id ? null : id;
     layoutTiles();
   };
+  t.querySelector('.wbtn')?.addEventListener('click', e => { e.stopPropagation(); watchStream(t._peer, true); });
+  t.querySelector('.wclose')?.addEventListener('click', e => { e.stopPropagation(); watchStream(t._peer, false); });
   t.querySelector('.fs').onclick = e => { e.stopPropagation(); goFullscreen(t); };
   t.querySelector('.menu').onclick = e => {
     e.stopPropagation();
@@ -2134,12 +2275,6 @@ function setTile(t, { stream, showVideo, label, micOff, deaf, mirror, vol, peer,
   }
 }
 
-let _localCam = null;
-function localCamStream() {
-  if (!call.camTrack) { _localCam = null; return null; }
-  if (!_localCam || _localCam.getVideoTracks()[0] !== call.camTrack) _localCam = new MediaStream([call.camTrack]);
-  return _localCam;
-}
 let _localCam2 = null;
 function localCamStream2() {
   if (!call.camTrack) { _localCam2 = null; return null; }
@@ -2156,20 +2291,48 @@ function renderTiles() {
   const me = { id: S.user.id, name: S.user.name, username: S.user.username, color: S.user.color };
   setTile(ensureTile('t-cam-me', me, false), {
     stream: localCamStream2(), showVideo: !!call.camTrack,
-    label: S.user.name + ' (você)', micOff: !(call.micTrack && call.micOn), deaf: isDeaf(), mirror: call.facing === 'user',
+    label: S.user.name + (myOtherDevices().length ? ` (você · ${deviceName()})` : ' (você)'), micOff: !(call.micTrack && call.micOn), deaf: isDeaf(), mirror: call.facing === 'user',
   });
   if (call.screenTrack) {
     keep.add('t-scr-me');
     const t = ensureTile('t-scr-me', me, true);
     if (t.querySelector('video').srcObject?.getVideoTracks()[0] !== call.screenTrack)
       setTile(t, { stream: new MediaStream([call.screenTrack]), showVideo: true, label: 'Sua tela (ao vivo)' });
+    const n = [...call.peers.values()].filter(p => p.watching).length;
+    t.querySelector('.tag span').textContent = `Sua tela (ao vivo) · ${n === 0 ? 'ninguém assistindo' : n === 1 ? '1 assistindo' : n + ' assistindo'}`;
   }
   const byUser = new Map();
   for (const p of call.peers.values()) (byUser.get(p.userId) || byUser.set(p.userId, []).get(p.userId)).push(p);
   for (const [uid, list] of byUser) {
     const mine = uid === S.user.id;                       // outro aparelho meu
     const primary = list.find(p => p.state.cam) || list.find(p => p.state.mic) || list[0];
-    if (!mine) {
+    if (mine) {
+      // um quadro para cada aparelho meu, com os botões de microfone e áudio dele
+      for (const d of list) {
+        const id = 't-cam-' + d.sid;
+        keep.add(id);
+        const t = ensureTile(id, d, false);
+        t.classList.add('mydev');
+        setTile(t, {
+          stream: d.camStream, showVideo: d.state.cam && d.camStream.getVideoTracks().length > 0,
+          label: `Você · ${d.dev || 'outro aparelho'}`, micOff: !d.state.mic, deaf: d.state.deaf || d.state.fdeaf, peer: d,
+        });
+        let bar = t.querySelector('.devctl');
+        if (!bar) {
+          bar = document.createElement('div');
+          bar.className = 'devctl';
+          bar.onclick = e => {
+            e.stopPropagation();
+            const b = e.target.closest('button[data-act]');
+            if (b && t._peer) controlMyDevice(t._peer, b.dataset.act);
+          };
+          t.appendChild(bar);
+        }
+        const micOn = d.state.mic, deaf = d.state.deaf || d.state.fdeaf;
+        bar.innerHTML = `<button class="${micOn ? '' : 'off'}" data-act="${micOn ? 'mic-off' : 'mic-on'}" title="${micOn ? 'Desligar o microfone' : 'Ligar o microfone'} do ${esc(d.dev || 'outro aparelho')}">${micOn ? I.mic : I.micOff}</button>
+          <button class="${deaf ? 'off' : ''}" data-act="${deaf ? 'deaf-off' : 'deaf-on'}" title="${deaf ? 'Reativar' : 'Desativar'} o áudio do ${esc(d.dev || 'outro aparelho')}">${deaf ? I.headOff : I.head}</button>`;
+      }
+    } else {
       const id = 't-cam-' + primary.sid;
       keep.add(id);
       const v = volOf(uid);
@@ -2187,11 +2350,18 @@ function renderTiles() {
       const id = 't-scr-' + p.sid;
       keep.add(id);
       const extra = list.filter(x => x.state.screen).length > 1 ? ` (${n})` : '';
-      setTile(ensureTile(id, p, true), {
-        stream: p.screenStream, showVideo: p.screenStream.getVideoTracks().length > 0,
+      const t = ensureTile(id, p, true);
+      const who = (mine ? 'Você (outro aparelho)' : nameOf(uid, p.username)) + extra;
+      setTile(t, {
+        stream: p.screenStream, showVideo: p.watched && p.screenStream.getVideoTracks().length > 0,
         label: (mine ? 'Sua tela' : 'Tela de ' + nameOf(uid, p.username)) + extra,
         vol: volOf(uid).screen, peer: p, screen: true,
       });
+      // não está assistindo: mostra o cartão com o botão "Assistir"
+      t.classList.toggle('unwatched', !p.watched);
+      t.querySelector('.wcard').classList.toggle('hidden', p.watched);
+      t.querySelector('.wclose').classList.toggle('hidden', !p.watched);
+      t.querySelector('.wname').textContent = `${who} está transmitindo`;
     }
   }
   for (const t of [...$('#tiles').children]) if (!keep.has(t.id)) t.remove();
@@ -2211,8 +2381,9 @@ function openPeerMenu(peer, isScreen, x, y) {
   const rooms = (g?.channels || []).filter(c => c.type === 'voice' && c.id !== call.channelId);
   const slider = (kind, label, val) => `<div class="vol-h">${label}</div><div class="vol">${I.vol}
     <input type="range" min="0" max="200" step="5" value="${val}" data-v="${kind}"><b data-vl="${kind}">${val}%</b></div>`;
-  ctx.innerHTML = `<div class="me-card">${avatar(peer, 'sm')}<span class="col"><b>${esc(nameOf(uid, peer.username))}</b><span>${mine ? 'você, em outro aparelho' : '@' + esc(userById(uid)?.username || '')}</span></span></div>
-    ${mine ? '' : slider('mic', 'Volume da voz', v.mic)}
+  ctx.innerHTML = `<div class="me-card">${avatar(peer, 'sm')}<span class="col"><b>${esc(nameOf(uid, peer.username))}</b><span>${mine ? 'você, no ' + esc(peer.dev || 'outro aparelho') : '@' + esc(userById(uid)?.username || '')}</span></span></div>
+    ${mine ? `<button class="item" data-self="${peer.state.mic ? 'mic-off' : 'mic-on'}">${peer.state.mic ? I.micOff : I.mic}${peer.state.mic ? 'Desligar o microfone' : 'Ligar o microfone'} do ${esc(peer.dev || 'outro aparelho')}</button>
+      <button class="item" data-self="${peer.state.deaf ? 'deaf-off' : 'deaf-on'}">${peer.state.deaf ? I.head : I.headOff}${peer.state.deaf ? 'Reativar o áudio' : 'Desativar o áudio'} do ${esc(peer.dev || 'outro aparelho')}</button>` : slider('mic', 'Volume da voz', v.mic)}
     ${peer.state.screen ? slider('screen', 'Volume da transmissão', v.screen) : ''}
     ${mine ? '' : `<button class="item" data-a="mute0">${v.mic === 0 ? I.vol : I.volOff}${v.mic === 0 ? 'Ouvir de novo' : 'Silenciar para mim'}</button>`}
     <button class="item" data-a="profile">${I.users}Ver perfil</button>
@@ -2234,6 +2405,8 @@ function openPeerMenu(peer, isScreen, x, y) {
   ctx.onclick = async e => {
     const rq = e.target.closest('[data-rq]');
     if (rq) { closeCtx(); setRecvQuality(Number(rq.dataset.rq), uid); return; }
+    const sf = e.target.closest('[data-self]');
+    if (sf) { closeCtx(); controlMyDevice(peer, sf.dataset.self); return; }
     const mv = e.target.closest('[data-move]'), it = e.target.closest('[data-a]');
     if (mv) { closeCtx(); const r = await emit('voice:force', { sid: peer.sid, action: 'move', to: mv.dataset.move }); if (r.error) toast(r.error); return; }
     if (!it) return;
@@ -2477,6 +2650,7 @@ function openMeMenu(anchor) {
     <div class="sep"></div>
     ${Object.entries(PRESENCE_LABEL).map(([k, v]) => `<button class="item" data-p="${k}"><i class="pres ${k === 'invisible' ? 'offline' : k}"></i>${v}${k === cur ? '<span class="sub">✓</span>' : ''}</button>`).join('')}
     <div class="sep"></div>
+    <button class="item" data-a="settings">${I.gear}Configurações</button>
     <button class="item" data-a="copy">${I.copy}Copiar ID do usuário</button>
     <button class="item danger" data-a="logout">${I.logout}Sair da conta</button>`;
   ctx.onclick = async e => {
@@ -2494,6 +2668,7 @@ function openMeMenu(anchor) {
     const a = it.dataset.a;
     if (a === 'profile') openProfile(S.user.id);
     if (a === 'edit') editProfile();
+    if (a === 'settings') openAccount();
     if (a === 'copy') navigator.clipboard?.writeText(S.user.id).then(() => toast('ID copiado!')).catch(() => toast(S.user.id));
     if (a === 'logout') confirmModal('Sair da conta?', 'Você poderá entrar de novo quando quiser.', 'Sair', logout);
   };
@@ -2519,15 +2694,15 @@ function openProfile(uid, fallback) {
   const since = u.created ? new Date(u.created).toLocaleDateString('pt-BR', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
   modal(`<div class="pf-banner" style="background:${esc(u.banner || u.color || '#555')}"></div>
     <div class="pf-av">${avatar(u, 'xl anim')}</div>
-    <h3 class="pf-name" style="color:${esc(nameColor(uid, '#e8e9ee'))}">${esc(u.name || u.username)}${g && g.ownerId === uid ? ' 👑' : ''}</h3>
+    <h3 class="pf-name" style="color:${esc(nameColor(uid, '#e8e9ee'))}">${esc(u.name || u.username)}${g && g.ownerId === uid ? `<i class="crown" title="Dono do grupo">${I.crown}</i>` : ''}</h3>
     <div class="pf-tag">@${esc(u.username)}</div>
     ${u.status ? `<div class="pf-status">${esc(u.status)}</div>` : ''}
     ${u.gone ? '<div class="pf-status">Esta pessoa não está mais no grupo.</div>' : profileExtras(uid)}
-    ${v ? `<div class="pf-box"><div class="pf-h">${v.screen ? 'Transmitindo a tela' : 'Em chamada de voz'}</div><div class="pf-voice">${v.screen ? '📺' : '🔊'} ${esc(v.name)} · ${esc(v.group)}</div></div>` : ''}
+    ${v ? `<div class="pf-box"><div class="pf-h">${v.screen ? 'Transmitindo a tela' : 'Em chamada de voz'}</div><div class="pf-voice">${v.screen ? I.screen : I.speaker} ${esc(v.name)}, em ${esc(v.group)}</div></div>` : ''}
     ${u.gone ? '' : `<div class="pf-box">
       <div class="pf-h">Sobre mim</div><div class="pf-bio">${u.bio ? linkify(u.bio) : '<span class="muted">Nada por aqui ainda.</span>'}</div>
       ${since ? `<div class="pf-h">Membro desde</div><div>${since}</div>` : ''}
-      <div class="pf-h">Situação</div><div>${PRESENCE_LABEL[presOf(u)] ? (presOf(u) === 'offline' ? '⚫ Offline' : '🟢 ' + PRESENCE_LABEL[presOf(u)]) : (on ? '🟢 Online' : '⚫ Offline')}</div></div>`}
+      <div class="pf-h">Situação</div><div class="pres-line"><i class="pres ${presOf(u)}"></i>${presOf(u) === 'offline' ? 'Offline' : (PRESENCE_LABEL[presOf(u)] || 'Online')}</div></div>`}
     <div class="acts">${me || u.gone ? '' : friendBtnHtml(uid)}${me ? '<button class="btn primary" id="pf-edit">Editar perfil</button>' : (u.gone || !canTalkTo(uid) ? '' : '<button class="btn primary" id="pf-dm">Enviar mensagem</button>')}<button class="btn" data-close>Fechar</button></div>`,
     card => {
       const b = card.querySelector('#pf-edit'); if (b) b.onclick = editProfile;
@@ -2582,20 +2757,6 @@ async function prepareImage(file, { square = true, max = 256, gifMax = 3 * 1024 
   return { id, stillId, gif, preview: URL.createObjectURL(file) };
 }
 
-function fileToAvatar(file) {
-  return new Promise((res, rej) => {
-    const img = new Image(), url = URL.createObjectURL(file);
-    img.onload = () => {
-      const side = Math.min(img.width, img.height), c = document.createElement('canvas');
-      c.width = c.height = 160;
-      c.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 160, 160);
-      URL.revokeObjectURL(url);
-      res(c.toDataURL('image/jpeg', 0.85));
-    };
-    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('img')); };
-    img.src = url;
-  });
-}
 
 function editProfile() {
   const u = S.user;

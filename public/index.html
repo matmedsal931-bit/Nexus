@@ -11,16 +11,20 @@
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" href="/icons/icon-192.png">
   <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <link rel="preload" href="/fonts/onest-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 
   <!-- Login / cadastro -->
   <div id="auth" class="auth hidden">
+    <div class="auth-brand">
+      <div class="auth-mark"><img src="/icons/icon-512.png" alt=""><h1>Nexo</h1></div>
+      <p>Voz, vídeo e conversa para o seu grupo de amigos.</p>
+    </div>
     <form class="auth-card" id="auth-form" autocomplete="on">
-      <img src="/icons/icon-192.png" alt="" class="auth-logo">
-      <h1>Nexo</h1>
-      <p class="muted" id="auth-sub">Entre para conversar com seus grupos</p>
+      <h2 id="auth-title">Entrar</h2>
+      <p class="muted" id="auth-sub">Use o seu nome de usuário e senha.</p>
       <div class="tabs">
         <button type="button" class="tab active" data-mode="login">Entrar</button>
         <button type="button" class="tab" data-mode="register">Criar conta</button>
@@ -33,6 +37,7 @@
       </label>
       <div class="error" id="auth-error"></div>
       <button class="btn primary big" id="auth-submit" type="submit">Entrar</button>
+      <p class="auth-foot" id="auth-foot">Ainda não tem conta? Toque em "Criar conta" acima.</p>
     </form>
   </div>
 
@@ -71,6 +76,7 @@
 
       <section id="chat-view" class="chat-view hidden">
         <div class="messages" id="messages"></div>
+        <div class="typing" id="typing"></div>
         <div class="compose-bar hidden" id="compose-bar"></div>
         <div class="att-bar hidden" id="att-bar"></div>
         <input type="file" id="att-file" multiple hidden>
@@ -105,5 +111,7 @@
   <script src="/socket.io/socket.io.min.js"></script>
   <script src="/app.js"></script>
   <script src="/settings.js"></script>
+  <script src="/features.js"></script>
+  <script src="/account.js"></script>
 </body>
 </html>

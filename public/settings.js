@@ -76,7 +76,7 @@ function openSettings(gid, tab) {
   $('#settings').classList.remove('hidden');
   renderSettings();
 }
-function closeSettings() { $('#settings').classList.add('hidden'); SET.gid = null; $('#set-body').innerHTML = ''; }
+function closeSettings() { window.onSettingsClose?.(); $('#settings').classList.add('hidden'); SET.gid = null; $('#set-body').innerHTML = ''; }
 $('#set-close').onclick = closeSettings;
 
 // chamado pelo app quando o grupo muda (para a tela acompanhar em tempo real)
@@ -259,7 +259,7 @@ function secMembros(g, body) {
   body.innerHTML = `<h2>Membros do grupo</h2>
     <div class="tbl-head"><b>${g.members.length} ${g.members.length === 1 ? 'membro' : 'membros'}</b><input id="sm-q" placeholder="Pesquisar pelo nome"></div>
     <div class="tbl mem-t"><div class="tr th"><span>Nome</span><span class="hm">Membro desde</span><span class="hm">Entrou no Nexo</span><span>Cargos</span><span></span></div>
-    ${list.map(m => `<div class="tr" data-n="${esc((m.name + " " + m.username).toLowerCase())}"><span class="who" data-uid="${esc(m.id)}">${avatar(m, 'sm')}<b style="color:${esc(nameColor(m.id, m.color, g))}">${esc(m.name)}${m.id === g.ownerId ? ' 👑' : ''}</b></span>
+    ${list.map(m => `<div class="tr" data-n="${esc((m.name + " " + m.username).toLowerCase())}"><span class="who" data-uid="${esc(m.id)}">${avatar(m, 'sm')}<b style="color:${esc(nameColor(m.id, m.color, g))}">${esc(m.name)}${m.id === g.ownerId ? `<i class="crown" title="Dono do grupo">${I.crown}</i>` : ''}</b></span>
       <span class="hm">${fmtDay(g.joined[m.id])}</span><span class="hm">${fmtDay(m.created)}</span><span class="chips">${roleChips(g, m.id)}</span><span class="r">${memberActions(g, m.id)}</span></div>`).join('')}</div>
     <p class="muted small">Mostrando ${g.members.length} ${g.members.length === 1 ? 'membro' : 'membros'}</p>`;
   body.querySelector('#sm-q').oninput = e => {
@@ -393,9 +393,10 @@ function secExcluir(g, body) {
 function openGroupMenu(g, anchor) {
   const owner = g.ownerId === S.user.id, canCh = can(g, 'manageChannels');
   ctx.innerHTML = `<button class="item" data-a="invite">${I.invite}Convidar para o grupo</button>
-    ${canOpenSettings(g) ? `<button class="item" data-a="settings">${I.gear}Config. do grupo</button>` : ''}
+    ${canOpenSettings(g) ? `<button class="item" data-a="settings">${I.gear}Configurações do grupo</button>` : ''}
     ${canCh ? `<button class="item" data-a="newch">${I.plus}Criar canal</button><button class="item" data-a="newcat">${I.folder}Criar categoria</button>` : ''}
     <div class="sep"></div>
+    <button class="item" data-a="mute">${prefs.muted.includes(g.id) ? I.bell + 'Voltar a avisar' : I.bellOff + 'Silenciar grupo'}</button>
     <button class="item" data-a="copyid">${I.copy}Copiar código do convite</button>
     <button class="item danger" data-a="leave">${owner ? I.trash : I.leave}${owner ? 'Excluir grupo' : 'Sair do grupo'}</button>`;
   ctx.onclick = e => {
@@ -406,6 +407,7 @@ function openGroupMenu(g, anchor) {
     if (a === 'settings') openSettings(g.id);
     if (a === 'newch') channelModal(g, 'text');
     if (a === 'newcat') categoryModal(g);
+    if (a === 'mute') toggleGroupMute(g.id);
     if (a === 'copyid') navigator.clipboard?.writeText(g.invite).then(() => toast('Código copiado!')).catch(() => toast(g.invite));
     if (a === 'leave') leaveGroupModal(g);
   };

@@ -59,6 +59,17 @@ basta rodar **Run workflow** na mão para religar.
 
 ---
 
+### Novidades desta versão
+- **Pesquisa de mensagens** (lupa ou Ctrl+F) com "ir até a mensagem"
+- **Mensagens antigas**: role para cima e elas vão carregando
+- **Menções @** com lista de sugestões e destaque, e **"digitando…"**
+- **Configurações pessoais** (engrenagem ao lado do seu nome): conta e senha, sair dos outros aparelhos,
+  microfone/câmera/saída de som com teste, notificações (todas / só menções / nunca, som, silenciar grupo) e aparência
+- **Visual novo**: fontes próprias (Bricolage Grotesque e Onest, licença OFL em `public/fonts`), animações curtas, nova tela de entrar
+- **Segurança**: arquivos enviados são conferidos pelo conteúdo, sessões com validade, convites mais longos com limite de tentativas,
+  limite de envio de arquivos, senha mínima de 6 caracteres
+- **Banco mais leve**: cada canal é gravado separado; o banco antigo é convertido sozinho na primeira vez
+
 ## 🚀 Hospedar de graça (sem usar o seu PC)
 
 Você vai usar 3 serviços gratuitos:

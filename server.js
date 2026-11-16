@@ -24,7 +24,15 @@ const MAX_MSGS_PER_CHANNEL = 1000;
 let db = { users: {}, tokens: {}, groups: {}, messages: {}, dms: {}, files: {}, friends: {}, freq: {} };
 let pgPool = null;
 
+// O banco é gravado em partes: uma linha com os dados gerais (usuários, grupos...)
+// e uma linha por canal com as mensagens dele. Assim, cada mensagem nova grava
+// só o canal onde ela entrou, e não o banco inteiro.
+const MSG_DIR = path.join(DATA_DIR, 'msgs');
+const dirtyMsgs = new Set();
+const safeName = cid => String(cid).replace(/[^a-zA-Z0-9_-]/g, '');
+
 async function loadDb() {
+  let legacy = false;
   if (process.env.DATABASE_URL) {
     const { Pool } = require('pg');
     pgPool = new Pool({
@@ -33,16 +41,27 @@ async function loadDb() {
     });
     await pgPool.query('CREATE TABLE IF NOT EXISTS nexo_store (id TEXT PRIMARY KEY, data JSONB NOT NULL)');
     await pgPool.query('CREATE TABLE IF NOT EXISTS nexo_files (id TEXT PRIMARY KEY, mime TEXT, name TEXT, data BYTEA)');
-    const r = await pgPool.query("SELECT data FROM nexo_store WHERE id = 'main'");
-    if (r.rows[0]) db = { ...db, ...r.rows[0].data };
+    const r = await pgPool.query('SELECT id, data FROM nexo_store');
+    const main = r.rows.find(x => x.id === 'main');
+    if (main) { legacy = !!main.data.messages; db = { ...db, ...main.data }; }
+    db.messages = db.messages || {};
+    for (const row of r.rows) if (row.id.startsWith('m:')) db.messages[row.id.slice(2)] = row.data;
     console.log('Banco: PostgreSQL');
-  } else if (fs.existsSync(DB_FILE)) {
-    try { db = { ...db, ...JSON.parse(fs.readFileSync(DB_FILE, 'utf8')) }; }
-    catch (e) { console.error('Falha ao ler db.json', e); }
-    console.log('Banco: arquivo local data/db.json');
   } else {
-    console.log('Banco: arquivo local data/db.json (novo)');
+    if (fs.existsSync(DB_FILE)) {
+      try { const d = JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); legacy = !!d.messages; db = { ...db, ...d }; }
+      catch (e) { console.error('Falha ao ler db.json', e); }
+    }
+    db.messages = db.messages || {};
+    if (fs.existsSync(MSG_DIR)) for (const f of fs.readdirSync(MSG_DIR)) {
+      if (!f.endsWith('.json')) continue;
+      try { db.messages[f.slice(0, -5)] = JSON.parse(fs.readFileSync(path.join(MSG_DIR, f), 'utf8')); }
+      catch (e) { console.error('Falha ao ler', f, e); }
+    }
+    console.log('Banco: arquivo local data/');
   }
+  // banco antigo (tudo numa linha só): separa as mensagens na próxima gravação
+  if (legacy) { for (const cid of Object.keys(db.messages)) dirtyMsgs.add(cid); save(); console.log('Convertendo o banco para o formato novo…'); }
 }
 
 let saveTimer = null;
@@ -52,23 +71,40 @@ function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(flush, 500);
 }
+// marca que as mensagens de um canal mudaram
+function touchMsgs(cid) { dirtyMsgs.add(cid); save(); }
+
 async function flush() {
   if (saving) { saveAgain = true; return; }
   saving = true;
+  const dirty = [...dirtyMsgs];
+  dirtyMsgs.clear();
   try {
-    const json = JSON.stringify(db);
+    const { messages, ...rest } = db;
+    const main = JSON.stringify(rest);
     if (pgPool) {
       await pgPool.query(
-        "INSERT INTO nexo_store (id, data) VALUES ('main', $1) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data",
-        [json]
-      );
+        "INSERT INTO nexo_store (id, data) VALUES ('main', $1) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data", [main]);
+      for (const cid of dirty) {
+        if (messages[cid]) await pgPool.query(
+          'INSERT INTO nexo_store (id, data) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data',
+          ['m:' + cid, JSON.stringify(messages[cid])]);
+        else await pgPool.query('DELETE FROM nexo_store WHERE id = $1', ['m:' + cid]);
+      }
     } else {
-      fs.mkdirSync(DATA_DIR, { recursive: true });
-      fs.writeFileSync(DB_FILE + '.tmp', json);
+      fs.mkdirSync(MSG_DIR, { recursive: true });
+      fs.writeFileSync(DB_FILE + '.tmp', main);
       fs.renameSync(DB_FILE + '.tmp', DB_FILE);
+      for (const cid of dirty) {
+        const f = path.join(MSG_DIR, safeName(cid) + '.json');
+        if (messages[cid]) { fs.writeFileSync(f + '.tmp', JSON.stringify(messages[cid])); fs.renameSync(f + '.tmp', f); }
+        else if (fs.existsSync(f)) fs.unlinkSync(f);
+      }
     }
   } catch (e) {
     console.error('Erro ao salvar', e);
+    for (const cid of dirty) dirtyMsgs.add(cid);   // tenta de novo na próxima
+    saveAgain = true;
   } finally {
     saving = false;
     if (saveAgain) { saveAgain = false; save(); }
@@ -82,6 +118,30 @@ async function flush() {
 // ------------------------------------------------------------------
 const FILES_DIR = path.join(DATA_DIR, 'files');
 const MAX_FILE = 8 * 1024 * 1024;
+// Tipos que podem abrir direto no navegador (o resto é sempre baixado)
+const INLINE_OK = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp',
+  'video/mp4', 'video/webm', 'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/webm', 'audio/mp4']);
+// Descobre o tipo pelo conteúdo do arquivo, sem confiar no que o navegador disse
+function sniffMime(b) {
+  const at = (o, ...bytes) => bytes.every((x, i) => b[o + i] === x);
+  const str = (o, t) => b.length >= o + t.length && b.toString('latin1', o, o + t.length) === t;
+  if (at(0, 0x89, 0x50, 0x4e, 0x47)) return 'image/png';
+  if (at(0, 0xff, 0xd8, 0xff)) return 'image/jpeg';
+  if (str(0, 'GIF8')) return 'image/gif';
+  if (str(0, 'RIFF') && str(8, 'WEBP')) return 'image/webp';
+  if (str(0, 'RIFF') && str(8, 'WAVE')) return 'audio/wav';
+  if (str(4, 'ftyp')) return /^(M4A |M4B )/.test(b.toString('latin1', 8, 12)) ? 'audio/mp4' : 'video/mp4';
+  if (at(0, 0x1a, 0x45, 0xdf, 0xa3)) return 'video/webm';
+  if (str(0, 'OggS')) return 'audio/ogg';
+  if (str(0, 'ID3') || (b[0] === 0xff && (b[1] & 0xe0) === 0xe0)) return 'audio/mpeg';
+  return null;
+}
+// Cabeçalhos que impedem um arquivo enviado de rodar código no site
+function safeFileHeaders(res) {
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Content-Security-Policy', "default-src 'none'; img-src 'self' data:; media-src 'self'; style-src 'unsafe-inline'; sandbox");
+  res.set('Cross-Origin-Resource-Policy', 'same-origin');
+}
 
 async function putFile(id, mime, name, buf) {
   if (pgPool) await pgPool.query('INSERT INTO nexo_files (id, mime, name, data) VALUES ($1,$2,$3,$4)', [id, mime, name, buf]);
@@ -107,11 +167,29 @@ async function delFile(id) {
   } catch (e) { /* ja apagado */ }
 }
 
+// Coloca uma mensagem no canal, apaga as mais antigas que passarem do limite
+// (e os arquivos delas) e marca o canal para gravar.
+function pushMsg(cid, msg) {
+  const arr = (db.messages[cid] ||= []);
+  arr.push(msg);
+  if (arr.length > MAX_MSGS_PER_CHANNEL) {
+    for (const old of arr.splice(0, arr.length - MAX_MSGS_PER_CHANNEL)) if (old.att) delFile(old.att.id);
+  }
+  touchMsgs(cid);
+  return arr;
+}
+// Apaga todas as mensagens de um canal (e os arquivos enviados nele)
+function dropChannelMsgs(cid) {
+  for (const m of db.messages[cid] || []) if (m.att) delFile(m.att.id);
+  delete db.messages[cid];
+  touchMsgs(cid);
+}
+
 // ------------------------------------------------------------------
 // Utilidades
 // ------------------------------------------------------------------
 const newId = () => crypto.randomBytes(8).toString('hex');
-const newInvite = () => crypto.randomBytes(4).toString('hex');
+const newInvite = () => crypto.randomBytes(6).toString('hex');
 const hashPass = (pw, salt) => crypto.scryptSync(String(pw), salt, 64).toString('hex');
 const COLORS = ['#7c5cff', '#2fc27a', '#f5a524', '#f04f5a', '#3ba7ff', '#e05fd0', '#14b8a6', '#f97316'];
 
@@ -179,7 +257,8 @@ async function sendImage(req, res, rec) {
   const fid = wantAnim ? (rec.id || rec.stillId) : (rec.stillId || rec.id);
   if (fid && db.files[fid]) {
     const f = await getFile(fid);
-    if (f) {
+    if (f && INLINE_OK.has(f.mime) && f.mime.startsWith('image/')) {
+      safeFileHeaders(res);
       res.set('Content-Type', f.mime);
       res.set('Cache-Control', 'public, max-age=31536000, immutable');
       return res.send(f.buf);
@@ -197,6 +276,15 @@ function sendDataUrl(res, dataUrl, cache) {
   res.send(Buffer.from(m[2], 'base64'));
 }
 
+// Para pesquisar sem ligar para acento e maiúscula
+const fold = t => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+// Acha os @nomes de usuário citados na mensagem que fazem parte da conversa
+function findMentions(text, memberIds) {
+  const names = new Set([...String(text || '').matchAll(/@([a-zA-Z0-9_.\-]{2,24})/g)].map(m => m[1].toLowerCase()));
+  if (!names.size) return [];
+  return memberIds.filter(id => db.users[id] && names.has(db.users[id].username.toLowerCase()));
+}
+
 function cleanName(s, max) { return String(s || '').replace(/\s+/g, ' ').trim().slice(0, max); }
 
 // ------------------------------------------------------------------
@@ -204,6 +292,14 @@ function cleanName(s, max) { return String(s || '').replace(/\s+/g, ' ').trim().
 // ------------------------------------------------------------------
 const app = express();
 app.set('trust proxy', 1);
+app.disable('x-powered-by');
+app.use((req, res, next) => {
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Referrer-Policy', 'same-origin');
+  res.set('X-Frame-Options', 'SAMEORIGIN');
+  res.set('Permissions-Policy', 'camera=(self), microphone=(self), display-capture=(self), fullscreen=(self)');
+  next();
+});
 app.use(express.json({ limit: '50kb' }));
 app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
 
@@ -217,11 +313,30 @@ function rateLimited(ip) {
   return a.length > 20;
 }
 
+// Sessões: valem 60 dias desde o último uso; cada conta guarda no máximo 15.
+const SESSION_DAYS = 60;
+const MAX_SESSIONS = 15;
+function sessionUser(token) {
+  if (typeof token !== 'string' || !token) return null;
+  let s = db.tokens[token];
+  if (!s) return null;
+  if (typeof s === 'string') s = db.tokens[token] = { uid: s, at: Date.now() };   // formato antigo
+  if (Date.now() - s.at > SESSION_DAYS * 864e5 || !db.users[s.uid]) { delete db.tokens[token]; save(); return null; }
+  if (Date.now() - s.at > 864e5) { s.at = Date.now(); save(); }   // renova uma vez por dia
+  return s.uid;
+}
 function issueToken(u) {
   const token = crypto.randomBytes(24).toString('hex');
-  db.tokens[token] = u.id;
+  db.tokens[token] = { uid: u.id, at: Date.now() };
+  const mine = Object.entries(db.tokens).filter(([, v]) => (typeof v === 'string' ? v : v.uid) === u.id)
+    .sort((a, b) => (a[1].at || 0) - (b[1].at || 0));
+  while (mine.length > MAX_SESSIONS) delete db.tokens[mine.shift()[0]];
   save();
   return token;
+}
+function dropSessions(uid, except) {
+  for (const [t, v] of Object.entries(db.tokens)) if ((typeof v === 'string' ? v : v.uid) === uid && t !== except) delete db.tokens[t];
+  save();
 }
 
 app.post('/api/register', (req, res) => {
@@ -230,7 +345,8 @@ app.post('/api/register', (req, res) => {
   const password = String(req.body?.password || '');
   if (!/^[\p{L}\p{N}_.\- ]{2,24}$/u.test(username))
     return res.status(400).json({ error: 'O nome deve ter de 2 a 24 caracteres (letras, números, espaço, _ . -).' });
-  if (password.length < 4) return res.status(400).json({ error: 'A senha precisa ter pelo menos 4 caracteres.' });
+  if (password.length < 6) return res.status(400).json({ error: 'A senha precisa ter pelo menos 6 caracteres.' });
+  if (password.length > 200) return res.status(400).json({ error: 'Senha longa demais.' });
   if (Object.values(db.users).some(u => u.username.toLowerCase() === username.toLowerCase()))
     return res.status(409).json({ error: 'Esse nome já está em uso.' });
   const salt = crypto.randomBytes(16).toString('hex');
@@ -299,13 +415,18 @@ app.get('/api/emoji/:gid/:id', (req, res) => {
 
 // Envio de arquivo: o corpo é o arquivo puro; nome e tipo vêm nos cabeçalhos
 app.post('/api/upload', express.raw({ type: '*/*', limit: MAX_FILE + 1024 }), async (req, res) => {
-  const uid = db.tokens[req.get('x-token')];
+  const uid = sessionUser(req.get('x-token'));
   if (!uid || !db.users[uid]) return res.status(401).json({ error: 'Sessão expirada. Entre de novo.' });
   const buf = req.body;
   if (!Buffer.isBuffer(buf) || !buf.length) return res.status(400).json({ error: 'Arquivo vazio.' });
   if (buf.length > MAX_FILE) return res.status(413).json({ error: 'O arquivo passa de 8 MB.' });
-  let mime = String(req.get('x-mime') || 'application/octet-stream').slice(0, 100);
+  let mime = String(req.get('x-mime') || 'application/octet-stream').slice(0, 100).toLowerCase();
   if (!/^[\w.+-]+\/[\w.+-]+$/.test(mime)) mime = 'application/octet-stream';
+  // imagem/vídeo/áudio só se o conteúdo confirmar; o resto vira "arquivo para baixar"
+  const real = sniffMime(buf);
+  if (real) mime = real;
+  else if (/^(image|video|audio)\//.test(mime) || /html|xml|javascript|svg/.test(mime)) mime = 'application/octet-stream';
+  if (!uploadAllowed(uid, buf.length)) return res.status(429).json({ error: 'Você enviou muitos arquivos agora. Espere alguns minutos.' });
   let name = '';
   try { name = decodeURIComponent(req.get('x-name') || ''); } catch { name = ''; }
   name = name.replace(/[\r\n"\\/]/g, '').trim().slice(0, 80) || 'arquivo';
@@ -315,11 +436,25 @@ app.post('/api/upload', express.raw({ type: '*/*', limit: MAX_FILE + 1024 }), as
   res.json({ att: { id, name, mime, size: buf.length } });
 });
 
+// No máximo 40 arquivos ou 150 MB a cada 10 minutos por pessoa
+const uploadLog = new Map();
+function uploadAllowed(uid, size) {
+  const now = Date.now();
+  const list = (uploadLog.get(uid) || []).filter(x => now - x.t < 10 * 60_000);
+  const total = list.reduce((a, x) => a + x.s, 0);
+  if (list.length >= 40 || total + size > 150 * 1024 * 1024) { uploadLog.set(uid, list); return false; }
+  list.push({ t: now, s: size });
+  uploadLog.set(uid, list);
+  return true;
+}
+
 app.get('/api/file/:id', async (req, res) => {
   const f = await getFile(req.params.id);
   if (!f) return res.status(404).end();
-  const inline = f.mime.startsWith('image/') || f.mime.startsWith('video/') || f.mime.startsWith('audio/');
-  res.set('Content-Type', f.mime);
+  // só abre no navegador se for mídia de verdade; qualquer outra coisa é baixada
+  const inline = INLINE_OK.has(f.mime) && sniffMime(f.buf) === f.mime;
+  safeFileHeaders(res);
+  res.set('Content-Type', inline ? f.mime : 'application/octet-stream');
   res.set('Cache-Control', 'public, max-age=31536000, immutable');
   res.set('Content-Disposition', `${inline ? 'inline' : 'attachment'}; filename*=UTF-8''${encodeURIComponent(f.name)}`);
   res.send(f.buf);
@@ -419,20 +554,15 @@ function sysMessage(g, text) {
   const c = g.channels.find(x => x.id === g.sys.channel && x.type === 'text') || g.channels.find(x => x.type === 'text');
   if (!c) return;
   const msg = { id: newId(), sys: true, text, ts: Date.now() };
-  const arr = (db.messages[c.id] ||= []);
-  arr.push(msg);
-  if (arr.length > MAX_MSGS_PER_CHANNEL) arr.splice(0, arr.length - MAX_MSGS_PER_CHANNEL);
+  pushMsg(c.id, msg);
   io.to('g:' + g.id).emit('message', { groupId: g.id, channelId: c.id, msg });
 }
 // Aviso dentro da conversa privada ("Ligação recusada", etc.)
 function dmSys(channelId, text) {
   const pr = dmPeers(channelId);
   if (!pr) return;
-  const arr = (db.messages[channelId] ||= []);
   const msg = { id: newId(), sys: true, text, ts: Date.now() };
-  arr.push(msg);
-  if (arr.length > MAX_MSGS_PER_CHANNEL) arr.splice(0, arr.length - MAX_MSGS_PER_CHANNEL);
-  save();
+  pushMsg(channelId, msg);
   for (const x of pr) {
     io.to('u:' + x).emit('message', { channelId, msg, dm: true });
     io.to('u:' + x).emit('dm:update', { entry: dmEntry(x, pr.find(y => y !== x) || x) });
@@ -529,7 +659,7 @@ function friendState(uid) {
 const pushFriends = uid => io.to('u:' + uid).emit('friends', friendState(uid));
 
 io.use((socket, next) => {
-  const uid = db.tokens[socket.handshake.auth?.token];
+  const uid = sessionUser(socket.handshake.auth?.token);
   const u = uid && db.users[uid];
   if (!u) return next(new Error('auth'));
   socket.user = u;
@@ -551,11 +681,46 @@ io.on('connection', socket => {
     friends: friendState(u.id),
   });
 
+  // ---------- Conta ----------
+  const myToken = socket.handshake.auth?.token;
+  async function kickOtherDevices() {
+    for (const so of await io.in('u:' + u.id).fetchSockets()) {
+      if (so.id === socket.id) continue;
+      so.emit('session:ended');
+      so.disconnect(true);
+    }
+  }
+  let pwTries = [];
+  socket.on('account:password', ({ current, next } = {}, cb) => {
+    const now = Date.now();
+    pwTries = pwTries.filter(t => now - t < 10 * 60_000);
+    if (pwTries.length >= 5) return reply(cb, { error: 'Muitas tentativas. Espere alguns minutos.' });
+    const a = Buffer.from(hashPass(String(current || ''), u.salt), 'hex'), b = Buffer.from(u.hash, 'hex');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) { pwTries.push(now); return reply(cb, { error: 'A senha atual está errada.' }); }
+    next = String(next || '');
+    if (next.length < 6) return reply(cb, { error: 'A senha nova precisa ter pelo menos 6 caracteres.' });
+    if (next.length > 200) return reply(cb, { error: 'Senha longa demais.' });
+    u.salt = crypto.randomBytes(16).toString('hex');
+    u.hash = hashPass(next, u.salt);
+    dropSessions(u.id, myToken);      // os outros aparelhos precisam entrar de novo
+    kickOtherDevices();
+    reply(cb, { ok: true });
+  });
+  socket.on('account:logout-others', (_, cb) => {
+    dropSessions(u.id, myToken);
+    kickOtherDevices();
+    reply(cb, { ok: true });
+  });
+  socket.on('account:sessions', (_, cb) => {
+    const n = Object.values(db.tokens).filter(v => (typeof v === 'string' ? v : v.uid) === u.id).length;
+    reply(cb, { sessions: n });
+  });
+
   // ---------- Perfil ----------
   // Confere se o id veio mesmo de um upload de imagem
   const imgFile = (id, gifOk) => {
     const f = id && db.files[id];
-    if (!f || !f.mime.startsWith('image/')) return null;
+    if (!f || !['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(f.mime)) return null;
     if (!gifOk && f.mime === 'image/gif') return null;
     return f;
   };
@@ -605,6 +770,7 @@ io.on('connection', socket => {
   socket.on('group:create', ({ name } = {}, cb) => {
     name = cleanName(name, 40);
     if (name.length < 1) return reply(cb, { error: 'Dê um nome ao grupo.' });
+    if (Object.values(db.groups).filter(x => x.ownerId === u.id).length >= 100) return reply(cb, { error: 'Você já criou o máximo de 100 grupos.' });
     const g = {
       id: newId(), name, ownerId: u.id, invite: newInvite(), members: [u.id], created: Date.now(),
       channels: [
@@ -621,10 +787,14 @@ io.on('connection', socket => {
     reply(cb, { group: groupView(g) });
   });
 
+  let badInvites = [];
   socket.on('group:join', ({ invite } = {}, cb) => {
-    invite = String(invite || '').trim().toLowerCase().replace(/^.*convite=/, '');
-    const g = Object.values(db.groups).find(x => x.invite === invite);
-    if (!g) return reply(cb, { error: 'Convite inválido.' });
+    const now = Date.now();
+    badInvites = badInvites.filter(t => now - t < 5 * 60_000);
+    if (badInvites.length >= 10) return reply(cb, { error: 'Muitos convites errados. Espere alguns minutos.' });
+    invite = String(invite || '').trim().toLowerCase().replace(/^.*convite=/, '').slice(0, 40);
+    const g = invite && Object.values(db.groups).find(x => x.invite === invite);
+    if (!g) { badInvites.push(now); return reply(cb, { error: 'Convite inválido.' }); }
     if (g.bans.some(b => b.id === u.id)) return reply(cb, { error: 'Você foi banido deste grupo.' });
     if (!g.members.includes(u.id)) {
       g.members.push(u.id);
@@ -644,7 +814,7 @@ io.on('connection', socket => {
       // Dono saindo = apaga o grupo
       io.to('g:' + g.id).emit('group:removed', { groupId: g.id });
       io.in('g:' + g.id).socketsLeave('g:' + g.id);
-      for (const c of g.channels) delete db.messages[c.id];
+      for (const c of g.channels) dropChannelMsgs(c.id);
       delete db.groups[g.id];
     } else {
       removeMember(g, u.id);
@@ -710,7 +880,7 @@ io.on('connection', socket => {
     linkDm(u.id, userId);
     save();
     io.to('u:' + userId).emit('dm:update', { entry: dmEntry(userId, u.id) });
-    reply(cb, { channelId: dmId(u.id, userId), user: memberView(other), inCall: voiceRoomView(dmId(u.id, userId)).length > 0, messages: (db.messages[dmId(u.id, userId)] || []).slice(-150) });
+    reply(cb, { channelId: dmId(u.id, userId), user: memberView(other), inCall: voiceRoomView(dmId(u.id, userId)).length > 0, messages: (db.messages[dmId(u.id, userId)] || []).slice(-80), hasMore: (db.messages[dmId(u.id, userId)] || []).length > 80 });
   });
 
   socket.on('dm:close', ({ userId } = {}, cb) => {
@@ -955,7 +1125,7 @@ io.on('connection', socket => {
     audit(f.g, u, `excluiu o canal ${f.c.name}`);
     f.g.channels = f.g.channels.filter(c => c.id !== channelId);
     if (f.g.sys.channel === channelId) f.g.sys.channel = null;
-    delete db.messages[channelId];
+    dropChannelMsgs(channelId);
     save();
     emitGroup(f.g);
     reply(cb, { ok: true });
@@ -977,12 +1147,79 @@ io.on('connection', socket => {
   });
 
   // ---------- Mensagens ----------
-  socket.on('channel:history', ({ channelId } = {}, cb) => {
+  // Sem nada: as 80 mais recentes. before: 60 anteriores a uma mensagem.
+  // around: a partir de um pouco antes da mensagem até a mais recente (para "ir até").
+  socket.on('channel:history', ({ channelId, before, around } = {}, cb) => {
     if (!channelCtx(channelId, u.id)) return reply(cb, { error: 'Canal não encontrado.' });
-    reply(cb, { messages: (db.messages[channelId] || []).slice(-150) });
+    const all = db.messages[channelId] || [];
+    let start, end = all.length;
+    if (around) {
+      const i = all.findIndex(m => m.id === around);
+      if (i < 0) return reply(cb, { error: 'Essa mensagem não existe mais.' });
+      start = Math.max(0, i - 25);
+    } else {
+      if (before) { const i = all.findIndex(m => m.id === before); if (i >= 0) end = i; }
+      start = Math.max(0, end - (before ? 60 : 80));
+    }
+    reply(cb, { messages: all.slice(start, end), hasMore: start > 0 });
+  });
+
+  // ---------- Pesquisa de mensagens ----------
+  // Procura só nos lugares onde a pessoa pode ler: canais de texto dos grupos dela e as conversas privadas.
+  socket.on('message:search', ({ query, groupId, channelId } = {}, cb) => {
+    const q = fold(String(query || '').trim()).slice(0, 100);
+    if (q.length < 2) return reply(cb, { error: 'Digite pelo menos 2 letras.' });
+    const places = [];
+    if (channelId) {
+      const ctx = channelCtx(channelId, u.id);
+      if (!ctx) return reply(cb, { error: 'Canal não encontrado.' });
+      places.push({ cid: channelId, ctx });
+    } else {
+      for (const g of Object.values(db.groups)) {
+        if (!g.members.includes(u.id) || (groupId && groupId !== '@me' && g.id !== groupId)) continue;
+        if (groupId === '@me') continue;
+        for (const c of g.channels) if (c.type === 'text') places.push({ cid: c.id, ctx: { g, c } });
+      }
+      if (!groupId || groupId === '@me') {
+        for (const other of db.dms[u.id] || []) {
+          const cid = dmId(u.id, other);
+          const ctx = channelCtx(cid, u.id);
+          if (ctx) places.push({ cid, ctx });
+        }
+      }
+    }
+    const hits = [];
+    for (const { cid, ctx } of places) {
+      for (const m of db.messages[cid] || []) {
+        if (m.sys) continue;
+        const who = db.users[m.userId];
+        const hay = fold(`${m.text || ''} ${m.att?.name || ''} ${who?.username || m.username} ${who?.display || ''}`);
+        if (!hay.includes(q)) continue;
+        hits.push({
+          channelId: cid, groupId: ctx.g?.id || null, place: ctx.dm ? null : `${ctx.g.name} › #${ctx.c.name}`,
+          dmWith: ctx.dm ? ctx.other : null,
+          msg: { id: m.id, userId: m.userId, username: m.username, color: m.color, text: (m.text || '').slice(0, 300), att: m.att ? { name: m.att.name, mime: m.att.mime } : null, ts: m.ts },
+        });
+      }
+    }
+    hits.sort((a, b) => b.msg.ts - a.msg.ts);
+    reply(cb, { results: hits.slice(0, 40), total: hits.length });
+  });
+
+  // ---------- "Fulano está digitando…" ----------
+  socket.on('typing', ({ channelId } = {}) => {
+    const now = Date.now();
+    if (now - lastTyping < 2000) return;
+    lastTyping = now;
+    const ctx = channelCtx(channelId, u.id);
+    if (!ctx || (ctx.c && ctx.c.type !== 'text')) return;
+    const data = { channelId, userId: u.id };
+    if (ctx.dm) io.to('u:' + ctx.other).emit('typing', data);
+    else socket.to('g:' + ctx.g.id).emit('typing', data);
   });
 
   let lastMsgs = [];
+  let lastTyping = 0;
   socket.on('message:send', ({ channelId, text, replyTo, att } = {}, cb) => {
     const ctx = channelCtx(channelId, u.id);
     if (!ctx || (ctx.c && ctx.c.type !== 'text')) return reply(cb, { error: 'Canal não encontrado.' });
@@ -995,18 +1232,20 @@ io.on('connection', socket => {
     lastMsgs = lastMsgs.filter(t => now - t < 5000);
     if (lastMsgs.length >= 8) return reply(cb, { error: 'Calma! Você está enviando rápido demais.' });
     lastMsgs.push(now);
+    lastTyping = 0;   // a próxima digitação já avisa na hora
     const arr = (db.messages[channelId] ||= []);
     const msg = { id: newId(), userId: u.id, username: u.username, color: u.color, text, ts: now };
     if (replyTo) {
       const r = arr.find(m => m.id === replyTo);
       if (r) msg.reply = { id: r.id, username: r.username, color: r.color, text: (r.text || '📎 ' + (r.att?.name || 'arquivo')).slice(0, 120) };
     }
+    const mentions = findMentions(text, ctx.dm ? ctx.peers : ctx.g.members).filter(x => x !== u.id);
+    if (mentions.length) msg.mentions = mentions;
     if (file) {
       msg.att = { id: file.id, name: file.name, mime: file.mime, size: file.size };
       if (Number.isFinite(att.w) && Number.isFinite(att.h)) { msg.att.w = Math.round(att.w); msg.att.h = Math.round(att.h); }
     }
-    arr.push(msg);
-    if (arr.length > MAX_MSGS_PER_CHANNEL) arr.splice(0, arr.length - MAX_MSGS_PER_CHANNEL);
+    pushMsg(channelId, msg);
     if (ctx.dm) linkDm(...ctx.peers);
     save();
     emitCtx(ctx, 'message', { groupId: ctx.g?.id, channelId, msg, dm: !!ctx.dm });
@@ -1031,8 +1270,10 @@ io.on('connection', socket => {
     if (!text && !l.m.att) return reply(cb, { error: 'Mensagem vazia.' });
     l.m.text = text;
     l.m.edited = true;
-    save();
-    emitCtx(l.ctx, 'message:edit', { channelId, id, text });
+    const mentions = findMentions(text, l.ctx.dm ? l.ctx.peers : l.g.members).filter(x => x !== u.id);
+    if (mentions.length) l.m.mentions = mentions; else delete l.m.mentions;
+    touchMsgs(channelId);
+    emitCtx(l.ctx, 'message:edit', { channelId, id, text, mentions: l.m.mentions || [] });
     reply(cb, { ok: true });
   });
 
@@ -1043,7 +1284,7 @@ io.on('connection', socket => {
     if (l.m.userId !== u.id && l.g) audit(l.g, u, `excluiu uma mensagem de ${l.m.username || 'sistema'}`);
     l.arr.splice(l.arr.indexOf(l.m), 1);
     if (l.m.att) delFile(l.m.att.id);
-    save();
+    touchMsgs(channelId);
     emitCtx(l.ctx, 'message:delete', { channelId, id });
     reply(cb, { ok: true });
   });
@@ -1063,7 +1304,7 @@ io.on('connection', socket => {
       list.push(u.id);
     }
     if (list.length) rs[emoji] = list; else delete rs[emoji];
-    save();
+    touchMsgs(channelId);
     emitCtx(l.ctx, 'message:react', { channelId, id, reactions: rs });
     reply(cb, { ok: true });
   });
@@ -1095,7 +1336,7 @@ io.on('connection', socket => {
     notifyVoice(cid);
   }
 
-  socket.on('voice:join', ({ channelId } = {}, cb) => {
+  socket.on('voice:join', ({ channelId, dev } = {}, cb) => {
     const pr = dmPeers(channelId);
     let f = null;
     if (pr) {
@@ -1112,7 +1353,8 @@ io.on('connection', socket => {
     voice.set(channelId, r);
     const peers = [...r.entries()].map(([sid, p]) => ({ sid, ...p }));
     const dupe = [...r.values()].some(p => p.userId === u.id);   // mesma conta em outro aparelho
-    const me = { userId: u.id, username: u.username, color: u.color, mic: false, cam: false, screen: false, deaf: false, fmute: false, fdeaf: false, dupe };
+    const me = { userId: u.id, username: u.username, color: u.color, mic: false, cam: false, screen: false, deaf: false, fmute: false, fdeaf: false, dupe,
+      dev: String(dev || '').replace(/[<>]/g, '').slice(0, 24) };
     r.set(socket.id, me);
     currentVoice = channelId;
     socket.join('v:' + channelId);
@@ -1173,27 +1415,32 @@ io.on('connection', socket => {
     if (p.userId !== u.id && (p.userId === g.ownerId || rank(g, u.id) >= rank(g, p.userId)))
       return reply(cb, { error: 'Essa pessoa está no mesmo nível ou acima do seu.' });
     const who = db.users[p.userId]?.display || p.username;
+    // todos os aparelhos dessa pessoa na sala (moderar um só deixaria falar pelo outro)
+    const devs = [...voice.get(cid).entries()].filter(([, x]) => x.userId === p.userId);
     if (action === 'mute' || action === 'unmute') {
-      p.fmute = action === 'mute';
-      if (p.fmute) p.mic = false;
-      io.to(sid).emit('voice:force', { action, by: u.username });
-      io.to('v:' + cid).emit('voice:state', { sid, ...p });
+      for (const [dsid, dp] of devs) {
+        dp.fmute = action === 'mute';
+        if (dp.fmute) dp.mic = false;
+        io.to(dsid).emit('voice:force', { action, by: u.username });
+        io.to('v:' + cid).emit('voice:state', { sid: dsid, ...dp });
+      }
       audit(g, u, `${p.fmute ? 'silenciou a voz de' : 'tirou o silêncio de'} ${who} na sala ${f.c.name}`);
     } else if (action === 'deafen' || action === 'undeafen') {
-      p.fdeaf = action === 'deafen';
-      if (p.fdeaf) p.mic = false;
-      io.to(sid).emit('voice:force', { action, by: u.username });
-      io.to('v:' + cid).emit('voice:state', { sid, ...p });
+      for (const [dsid, dp] of devs) {
+        dp.fdeaf = action === 'deafen';
+        if (dp.fdeaf) dp.mic = false;
+        io.to(dsid).emit('voice:force', { action, by: u.username });
+        io.to('v:' + cid).emit('voice:state', { sid: dsid, ...dp });
+      }
       audit(g, u, `${p.fdeaf ? 'desativou o áudio de' : 'reativou o áudio de'} ${who} na sala ${f.c.name}`);
     } else if (action === 'disconnect') {
-      io.to(sid).emit('voice:force', { action, by: u.username });
-      dropVoice(cid, sid);
+      for (const [dsid] of devs) { io.to(dsid).emit('voice:force', { action, by: u.username }); dropVoice(cid, dsid); }
       audit(g, u, `desconectou ${who} da sala ${f.c.name}`);
     } else if (action === 'move') {
       const dest = g.channels.find(c => c.id === to && c.type === 'voice');
       if (!dest) return reply(cb, { error: 'Sala não encontrada.' });
       if (dest.id === cid) return reply(cb, { ok: true });
-      io.to(sid).emit('voice:force', { action, channelId: dest.id, by: u.username });
+      for (const [dsid] of devs) io.to(dsid).emit('voice:force', { action, channelId: dest.id, by: u.username });
       audit(g, u, `moveu ${who} para a sala ${dest.name}`);
     } else return reply(cb, { error: 'Ação inválida.' });
     save();
@@ -1207,6 +1454,24 @@ io.on('connection', socket => {
     if (!currentVoice) return;
     if (!voice.get(currentVoice)?.has(to)) return;
     io.to(to).emit('voice:quality', { from: socket.id, maxH: Math.max(0, Math.min(2160, Number(maxH) || 0)) });
+  });
+
+  // A mesma conta em vários aparelhos: um aparelho pode ligar/desligar
+  // o microfone ou o áudio do outro. Só vale entre aparelhos da MESMA conta.
+  socket.on('voice:self', ({ sid, action } = {}, cb) => {
+    if (!currentVoice) return reply(cb, { error: 'Você não está numa chamada.' });
+    const t = voice.get(currentVoice)?.get(sid);
+    if (!t || t.userId !== u.id || sid === socket.id) return reply(cb, { error: 'Esse aparelho não está nesta chamada.' });
+    if (!['mic-on', 'mic-off', 'deaf-on', 'deaf-off'].includes(action)) return reply(cb, { error: 'Ação inválida.' });
+    io.to(sid).emit('voice:self', { action, from: voice.get(currentVoice).get(socket.id)?.dev || 'outro aparelho' });
+    reply(cb, { ok: true });
+  });
+
+  // Quem quer assistir a transmissão de alguém avisa a pessoa;
+  // ela só manda o vídeo da tela para quem está assistindo.
+  socket.on('voice:watch', ({ to, on } = {}) => {
+    if (!currentVoice || !voice.get(currentVoice)?.has(to)) return;
+    io.to(to).emit('voice:watch', { from: socket.id, on: !!on });
   });
 
   socket.on('signal', ({ to, data } = {}) => {
@@ -1225,6 +1490,12 @@ io.on('connection', socket => {
 });
 
 // ------------------------------------------------------------------
+setInterval(() => {
+  let n = 0;
+  for (const [t, v] of Object.entries(db.tokens)) if (typeof v === 'object' && Date.now() - v.at > SESSION_DAYS * 864e5) { delete db.tokens[t]; n++; }
+  if (n) save();
+}, 6 * 3600e3).unref();
+
 loadDb().then(() => {
   Object.values(db.groups).forEach(ensureGroup);
   db.dms ||= {}; db.files ||= {}; db.friends ||= {}; db.freq ||= {};

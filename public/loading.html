@@ -3,16 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="theme-color" content="#111216">
+<meta name="theme-color" content="#10131b">
 <title>Nexo</title>
 <link rel="icon" href="/icons/icon-192.png">
 <style>
+  @font-face { font-family: 'Bricolage Grotesque'; font-weight: 200 800; font-display: swap; src: url(/fonts/bricolage-latin.woff2) format('woff2'); }
+  @font-face { font-family: 'Onest'; font-weight: 100 900; font-display: swap; src: url(/fonts/onest-latin.woff2) format('woff2'); }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
     background: radial-gradient(1200px 600px at 20% 0%, #2a1f5c 0%, transparent 60%),
-                radial-gradient(900px 500px at 100% 100%, #123a3a 0%, transparent 60%), #111216;
-    color: #e8e9ee; font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+                radial-gradient(900px 500px at 100% 100%, #123a3a 0%, transparent 60%), #10131b;
+    color: #e8e9ee; font: 16px/1.5 "Onest", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 22px; padding: 24px; text-align: center;
   }
@@ -20,17 +22,17 @@
   .ring svg { position: absolute; inset: 0; width: 132px; height: 132px; transform: rotate(-90deg); }
   .ring circle { fill: none; stroke-width: 5; stroke-linecap: round; }
   .trk { stroke: rgba(255,255,255,.08); }
-  .arc { stroke: #7c5cff; stroke-dasharray: 90 310; animation: spin 1.3s linear infinite; }
+  .arc { stroke: #7b61ff; stroke-dasharray: 90 310; animation: spin 1.3s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); transform-origin: 66px 66px; } }
   .logo { width: 84px; height: 84px; border-radius: 24px; animation: breathe 2.4s ease-in-out infinite; }
   @keyframes breathe { 0%,100% { transform: scale(1); } 50% { transform: scale(1.07); } }
-  h1 { margin: 0; font-size: 30px; letter-spacing: .5px; }
+  h1 { margin: 0; font: 800 34px/1 "Bricolage Grotesque", "Onest", sans-serif; letter-spacing: -.03em; }
   p { margin: 0; color: #9a9daa; max-width: 330px; }
   .dots::after { content: ''; animation: dots 1.4s steps(4, end) infinite; }
   @keyframes dots { 0% { content: ''; } 25% { content: '.'; } 50% { content: '..'; } 75% { content: '...'; } }
   .slow { font-size: 14px; color: #7c7f8c; max-width: 340px; opacity: 0; transition: opacity .4s; }
   .slow.on { opacity: 1; }
-  button { margin-top: 4px; border: 0; border-radius: 10px; padding: 11px 20px; background: #7c5cff; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
+  button { margin-top: 4px; border: 0; border-radius: 10px; padding: 11px 20px; background: #7b61ff; color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
   button:hover { background: #6846f5; }
 </style>
 </head>
