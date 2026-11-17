@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self'; style-src 'unsafe-inline'; script-src 'self'">
+<title>Nexo</title>
+<style>
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: radial-gradient(1200px 600px at 20% 0%, #2a1f5c 0%, transparent 60%),
+                radial-gradient(900px 500px at 100% 100%, #123a3a 0%, transparent 60%), #10131b;
+    color: #e8e9ee; font: 16px/1.5 "Segoe UI", system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 20px; text-align: center; user-select: none;
+  }
+  img { width: 96px; height: 96px; border-radius: 26px; animation: breathe 2.4s ease-in-out infinite; }
+  @keyframes breathe { 50% { transform: scale(1.07); } }
+  @media (prefers-reduced-motion: reduce) { img { animation: none; } }
+  h1 { margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -.02em; }
+  p { margin: 0; color: #9a9daa; max-width: 360px; }
+  #slow { font-size: 14px; color: #7c7f8c; min-height: 42px; }
+  button { border: 0; border-radius: 10px; padding: 10px 20px; background: #7b61ff; color: #fff; font: inherit; font-weight: 600; cursor: pointer; display: none; }
+  button:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+</style>
+</head>
+<body>
+  <img src="icon.png" alt="">
+  <h1>Nexo</h1>
+  <p id="msg">Conectando…</p>
+  <p id="slow"></p>
+  <button id="retry">Tentar de novo</button>
+  <script src="splash.js"></script>
+</body>
+</html>

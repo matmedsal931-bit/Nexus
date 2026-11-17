@@ -291,6 +291,7 @@ function connect() {
     // saiu versão nova do Nexo: atualiza (se estiver em chamada, espera sair)
     if (S.ver && d.ver && d.ver !== S.ver) return newVersion();
     S.ver = d.ver;
+    setTimeout(restoreDraft, 1500);
     if (away.on) sock.emit('presence:away', { away: true });   // voltou a conectar parado
     S.user = d.user;
     S.groups = d.groups;
@@ -519,12 +520,30 @@ function connect() {
 
 // ---------- Não lidas ----------
 // Tira o aviso do canal e avisa o servidor (assim some nos outros aparelhos também)
+// ocupado = não dá para recarregar sem atrapalhar (chamada, texto digitado, arquivo subindo)
+function updateBusy() {
+  return !!call.channelId || !!$('#msg-input')?.value.trim() || S.atts.some(a => a.up);
+}
 function newVersion() {
+  const first = !S.updatePending;
   S.updatePending = true;
-  if (call.channelId) {
-    toast('Saiu uma versão nova do Nexo. Ela entra quando você sair da chamada.', 8000);
-    return;
-  }
+  if (!updateBusy()) return reloadForUpdate();
+  renderRail();
+  if (first) toast(call.channelId ? 'Saiu uma versão nova do Nexo. Ela entra quando você sair da chamada — ou clique no botão verde.' : 'Saiu uma versão nova do Nexo. Clique no botão verde para atualizar.', 8000);
+}
+// quando deixar de estar ocupado (mandou a mensagem, terminou o envio), atualiza sozinho
+setInterval(() => { if (S.updatePending && !updateBusy()) reloadForUpdate(); }, 4000);
+// texto que estava sendo digitado quando a pessoa clicou em atualizar volta para a caixa
+function restoreDraft() {
+  try {
+    const k = 'nexo_draft_' + S.cid, t = localStorage.getItem(k);
+    if (t && $('#msg-input') && !$('#msg-input').value) { $('#msg-input').value = t; $('#msg-input').dispatchEvent(new Event('input')); }
+    Object.keys(localStorage).filter(x => x.startsWith('nexo_draft_')).forEach(x => localStorage.removeItem(x));
+  } catch {}
+}
+async function clickUpdate() {
+  if (call.channelId && !(await askYesNo('Atualizar agora?', 'Atualizar recarrega o Nexo e tira você da chamada. Você pode entrar de novo logo depois.', 'Atualizar', 'Depois'))) return;
+  if ($('#msg-input')?.value.trim()) try { localStorage.setItem('nexo_draft_' + S.cid, $('#msg-input').value); } catch {}
   reloadForUpdate();
 }
 async function reloadForUpdate() {
@@ -565,7 +584,7 @@ function notify(msg, groupId, channelId, dmPeer) {
     const su = userById(msg.userId);
     const icon = su?.av ? `/api/avatar/${encodeURIComponent(msg.userId)}?v=${su.av}` : '/icons/icon-192.png';
     const n = new Notification(title, { body: body.slice(0, 140), icon, badge: '/icons/icon-192.png', tag: channelId, renotify: true });
-    n.onclick = () => { window.focus(); if (dmPeer) openDM(dmPeer); else { S.gid = groupId; openTextChannel(channelId); } n.close(); };
+    n.onclick = () => { window.focus(); window.nexoDesktop?.focus(); if (dmPeer) openDM(dmPeer); else { S.gid = groupId; openTextChannel(channelId); } n.close(); };
   } catch {}
 }
 function askNotifyPermission() {
@@ -729,6 +748,16 @@ function renderRail() {
   home.innerHTML = I.home + (S.friends.in.length ? `<span class="badge">${S.friends.in.length}</span>` : '');
   home.onclick = () => selectGroup('@me');
   rail.appendChild(home);
+  // atualização pronta (do site ou do app para PC): botão verde, como no Discord
+  const deskUpd = window.nexoDesktop?.updateReady?.();
+  if (S.updatePending || deskUpd) {
+    const up = document.createElement('button');
+    up.className = 'rail-upd';
+    up.title = deskUpd && !S.updatePending ? `Nova versão do app para PC (${deskUpd}) — clique para reiniciar e instalar` : 'Atualização pronta — clique para atualizar';
+    up.innerHTML = I.download;
+    up.onclick = () => deskUpd && !S.updatePending ? window.nexoDesktop.installUpdate() : clickUpdate();
+    rail.appendChild(up);
+  }
   // conversas privadas com mensagem nova aparecem logo abaixo, com a foto da pessoa
   const pend = S.dms.filter(d => unreadOf(dmChannelId(d.user.id)) > 0)
     .sort((a, b) => (b.last?.ts || 0) - (a.last?.ts || 0)).slice(0, 8);
@@ -1751,7 +1780,7 @@ function stopKeepAlive() {
 function leaveCall() {
   if (!call.channelId) return;
   SFX.stop('back');
-  if (S.updatePending) setTimeout(reloadForUpdate, 600);
+  if (S.updatePending) setTimeout(() => { if (!updateBusy()) reloadForUpdate(); }, 600);
   const was = call.channelId;
   call.rejoin = null;
   call.fmute = false;
@@ -1791,7 +1820,7 @@ function stopLocalTracks() {
 
 // Busca os servidores de conexão (as senhas do TURN vencem; renova a cada 6 h)
 async function loadIce() {
-  try { const j = await (await fetch('/api/config', { cache: 'no-store' })).json(); S.ice = j.iceServers; S.hasTurn = !!j.turn; S.iceAt = Date.now(); if (j.upload) S.upCfg = j.upload; } catch {}
+  try { const j = await (await fetch('/api/config', { cache: 'no-store' })).json(); S.ice = j.iceServers; S.hasTurn = !!j.turn; S.iceAt = Date.now(); if (j.upload) S.upCfg = j.upload; S.desk = j.desktop || null; } catch {}
 }
 // Ausente automático: 10 min sem mexer no aparelho
 const AWAY_MS = 10 * 60e3;
@@ -2857,9 +2886,10 @@ function showIncoming(channelId, from) {
   });
   // notificação do sistema, caso o app esteja em segundo plano
   try {
+    if (!quiet) window.nexoDesktop?.attention();   // app para PC: pisca na barra de tarefas
     if (!quiet && document.visibilityState !== 'visible' && 'Notification' in window && Notification.permission === 'granted') {
       const n = new Notification(`${from.name} está te ligando`, { body: 'Toque para atender', icon: '/icons/icon-192.png', tag: 'ring' });
-      n.onclick = () => { window.focus(); n.close(); };
+      n.onclick = () => { window.focus(); window.nexoDesktop?.focus(); n.close(); };
     }
   } catch {}
 }
@@ -3051,6 +3081,8 @@ function editProfile() {
 // ---------------------------------------------------------------------
 // Instalar como aplicativo (PC e celular)
 // ---------------------------------------------------------------------
+// app para PC: baixou atualização do programa → aparece o botão verde
+window.addEventListener('nexo-desktop-update', () => renderRail());
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); S.installEvt = e; renderUserbar(); });
 window.addEventListener('appinstalled', () => { S.installEvt = null; renderUserbar(); toast('Nexo instalado! Procure o ícone na sua área de trabalho.'); });
 async function installApp() {

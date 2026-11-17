@@ -557,10 +557,52 @@ async function turnServers() {
   if (out.length) iceCache = { at: Date.now(), list: out };
   return out;
 }
+// ---------------------------------------------------------------------
+// App para PC (Windows): o instalador e o latest.yml ficam no R2, na pasta desktop/
+// (ou em data/desktop/ sem R2). O app se atualiza sozinho lendo /desktop/latest.yml.
+// ---------------------------------------------------------------------
+const DESK_DIR = path.join(DATA_DIR, 'desktop');
+const deskName = n => /^[\w.\- ]{1,120}$/.test(n) && !n.startsWith('.') ? n : null;
+let deskCache = { at: 0, info: null };
+async function desktopInfo() {
+  if (Date.now() - deskCache.at < 5 * 60e3) return deskCache.info;
+  let info = null;
+  try {
+    let yml = null;
+    if (store.mode === 's3') { if ((await store.size('desktop/latest.yml')) > 0) yml = (await store.head('desktop/latest.yml', 16384)).toString('utf8'); }
+    else if (fs.existsSync(path.join(DESK_DIR, 'latest.yml'))) yml = fs.readFileSync(path.join(DESK_DIR, 'latest.yml'), 'utf8');
+    const ver = yml && /^version:\s*['"]?([\w.\-]+)/m.exec(yml)?.[1];
+    const file = yml && /^path:\s*['"]?([^'"\r\n]+)/m.exec(yml)?.[1];
+    if (ver && file && deskName(file.trim())) info = { version: ver, file: file.trim() };
+  } catch (e) { console.warn('app para PC: não consegui ler latest.yml', e.message); }
+  deskCache = { at: Date.now(), info };
+  return info;
+}
+app.get('/desktop/:file', async (req, res) => {
+  const name = deskName(req.params.file);
+  if (!name) return res.status(404).end();
+  if (store.mode === 's3') {
+    const key = 'desktop/' + name;
+    if ((await store.size(key).catch(() => -1)) < 0) return res.status(404).end();
+    const mime = name.endsWith('.yml') ? 'text/yaml' : 'application/octet-stream';
+    res.set('Cache-Control', 'no-store');
+    return res.redirect(302, await store.readUrl(key, { mime, inline: name.endsWith('.yml'), name }));
+  }
+  const f = path.join(DESK_DIR, name);
+  if (!fs.existsSync(f)) return res.status(404).end();
+  res.set('Cache-Control', 'no-store');
+  res.download(f, name);
+});
+// link fixo para baixar a versão mais nova (para mandar para os amigos)
+app.get('/baixar/pc', async (req, res) => {
+  const d = await desktopInfo();
+  if (!d) return res.status(404).send('O app para PC ainda não foi publicado neste servidor.');
+  res.redirect(302, '/desktop/' + encodeURIComponent(d.file));
+});
 app.get('/api/config', async (req, res) => {
   const turn = await turnServers();
   res.json({ iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }, ...turn], turn: turn.length > 0,
-    upload: { maxMB: Math.round(store.maxBytes / MBY), mode: store.mode, partMB: store.partSize / MBY } });
+    upload: { maxMB: Math.round(store.maxBytes / MBY), mode: store.mode, partMB: store.partSize / MBY }, desktop: await desktopInfo() });
 });
 
 // Foto de perfil (guardada como data URL no banco)

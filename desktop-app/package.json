@@ -1,0 +1,47 @@
+{
+  "name": "nexo",
+  "productName": "Nexo",
+  "version": "1.0.0",
+  "description": "Nexo para Windows",
+  "author": "Nexo",
+  "main": "src/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win nsis --x64"
+  },
+  "dependencies": {
+    "electron-updater": "^6.6.2"
+  },
+  "devDependencies": {
+    "electron": "^38.2.0",
+    "electron-builder": "^26.0.12",
+    "resedit": "^2.0.3"
+  },
+  "build": {
+    "appId": "com.nexo.app",
+    "productName": "Nexo",
+    "copyright": "Nexo",
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": ["src/**/*", "package.json"],
+    "afterPack": "./build/after-pack.js",
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "build/icon.ico",
+      "signAndEditExecutable": false,
+      "artifactName": "Nexo-Setup-${version}.${ext}"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": false,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "shortcutName": "Nexo",
+      "createDesktopShortcut": "always",
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    },
+    "publish": [{ "provider": "generic", "url": "https://nexus-3h1x.onrender.com/desktop/" }]
+  }
+}

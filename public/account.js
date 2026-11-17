@@ -11,6 +11,7 @@ const ACC_TABS = [
   ['video', 'Vídeo'],
   ['notif', 'Notificações'],
   ['aparencia', 'Aparência'],
+  ['app', 'App para PC'],
 ];
 const ACC = { tab: 'conta', test: null };
 function openAccount(tab = 'conta') {
@@ -38,7 +39,7 @@ function renderAccount() {
   const body = $('#set-body');
   body.scrollTop = 0;
   if (ACC.tab === 'voz') ACC.tab = 'audio';
-  ({ conta: accConta, audio: accAudio, video: accVideo, notif: accNotif, aparencia: accLook })[ACC.tab](body);
+  ({ conta: accConta, audio: accAudio, video: accVideo, notif: accNotif, aparencia: accLook, app: accApp })[ACC.tab](body);
 }
 
 // ---------------------------------------------------------------------
@@ -356,6 +357,39 @@ async function accVideo(body) {
     if (ACC.test?.cam) { ACC.test.cam.getTracks().forEach(x => x.stop()); ACC.test.cam = null; q('#av-video').srcObject = null; q('#av-camtest').textContent = 'Ligar a câmera de teste'; }
     else startCamTest();
   };
+}
+
+// ---------------------------------------------------------------------
+// App para PC
+// ---------------------------------------------------------------------
+async function accApp(body) {
+  const D = window.nexoDesktop;
+  if (D) {
+    const st = await D.settings();
+    const upd = D.updateReady();
+    body.innerHTML = `<h2>App para PC</h2>
+      <div class="set-block" style="border:0;padding-top:0"><div class="pf-h">Versão</div>
+        <p>Nexo para Windows <b>${esc(D.version)}</b>. As novidades do Nexo entram sozinhas; o próprio programa também se atualiza.</p>
+        <p class="muted" id="ap-st">${upd ? `A versão ${esc(upd)} já foi baixada.` : esc(st.updateStatus || '')}</p>
+        <div class="row l">${upd ? '<button class="btn primary" id="ap-inst">Reiniciar e atualizar</button>' : '<button class="btn" id="ap-check">Procurar atualização</button>'}</div></div>
+      <label class="perm"><div><b>Abrir junto com o Windows</b><p>O Nexo liga minimizado na bandeja, perto do relógio.</p></div>
+        <input type="checkbox" class="tg" id="ap-boot" ${st.openAtLogin ? 'checked' : ''}></label>
+      <label class="perm"><div><b>Fechar minimiza para a bandeja</b><p>O X não fecha o programa: ele continua recebendo mensagens e ligações. Para sair de vez, clique com o botão direito no ícone da bandeja → Sair.</p></div>
+        <input type="checkbox" class="tg" id="ap-tray" ${st.closeToTray ? 'checked' : ''}></label>`;
+    const q = x => body.querySelector(x);
+    q('#ap-inst')?.addEventListener('click', () => D.installUpdate());
+    q('#ap-check')?.addEventListener('click', async () => { q('#ap-st').textContent = 'Procurando…'; const r = await D.checkUpdate(); q('#ap-st').textContent = r; });
+    q('#ap-boot').onchange = e => D.setSetting('openAtLogin', e.target.checked);
+    q('#ap-tray').onchange = e => D.setSetting('closeToTray', e.target.checked);
+    return;
+  }
+  const d = S.desk;
+  body.innerHTML = `<h2>App para PC</h2>
+    <div class="set-block" style="border:0;padding-top:0"><div class="pf-h">Nexo para Windows</div>
+      <p>Um programa de verdade, como o Discord: fica na bandeja perto do relógio, abre com o Windows se você quiser e se atualiza sozinho — sem precisar recarregar a página.</p>
+      ${d ? `<div class="row l"><a class="btn primary" href="/baixar/pc" download>${I.download} Baixar para Windows (versão ${esc(d.version)})</a></div>
+        <p class="muted small">Depois de baixar, abra o arquivo <b>${esc(d.file)}</b>. Se o Windows mostrar "O Windows protegeu o computador", clique em <b>Mais informações → Executar assim mesmo</b> (o programa não tem assinatura paga da Microsoft).</p>`
+        : '<p class="muted">O instalador ainda não foi publicado neste servidor.</p>'}</div>`;
 }
 
 // ---------------------------------------------------------------------
