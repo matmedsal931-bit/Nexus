@@ -1245,7 +1245,7 @@ function msgHtml(m, grouped) {
   const rs = m.reactions ? Object.entries(m.reactions).filter(([, ids]) => ids.length) : [];
   const reacts = rs.length ? `<div class="reacts">${rs.map(([e, ids]) =>
     `<button class="react ${ids.includes(S.user?.id) ? 'mine' : ''}" data-react="${esc(e)}">${emojiHtml(e)} <b>${ids.length}</b></button>`).join('')}</div>` : '';
-  const body = (m.text ? `<div class="msg-text">${richText(m.text)}${m.edited ? ' <span class="edited">(editado)</span>' : ''}</div>` : '') + attHtml(m.att);
+  const body = (m.text ? `<div class="msg-text">${richText(m.text)}${m.edited ? ' <span class="edited">(editado)</span>' : ''}</div>` : '') + (typeof embedsHtml === 'function' ? embedsHtml(m) : '') + attHtml(m.att);
   const text = body + reacts;
   const fcR = !isDmChannel(S.cid) && findChannel(S.cid)?.c;
   const tReact = !fcR || canCh(fcR, 'addReactions'), tReply = !fcR || (canCh(fcR, 'sendMessages') && (chCfg(fcR).replies !== false || canCh(fcR, 'manageMessages')));
@@ -1281,7 +1281,9 @@ function renderMessages(mode) {
     }
   }
   html += typeof outboxHtml === 'function' ? outboxHtml(S.cid) : '';
+  const live = window.liveKeep?.(box);
   box.innerHTML = html;
+  window.liveRestore?.(box, live);
   window.afterRenderMessages?.(mode);
   if (mode === 'keep') box.scrollTop = nearBottom ? box.scrollHeight : prevTop;
   else if (!mode || nearBottom || msgs?.at(-1)?.userId === S.user?.id) box.scrollTop = box.scrollHeight;

@@ -258,7 +258,7 @@ function videoAttHtml(a) {
       <span class="col"><b>${esc(a.name)}</b><span>${info} · este formato não toca no navegador</span></span>
       <a class="btn sm" href="${url}" download="${esc(a.name)}">Baixar</a></div>`;
   }
-  return `<div class="vp" data-src="${url}" data-name="${esc(a.name)}" data-dur="${a.dur || ''}" style="width:min(100%, ${W}px);aspect-ratio:${ratio}" tabindex="0">
+  return `<div class="vp" data-key="vp:${url}" data-src="${url}" data-name="${esc(a.name)}" data-dur="${a.dur || ''}" style="width:min(100%, ${W}px);aspect-ratio:${ratio}" tabindex="0">
     ${poster ? `<img class="vp-poster" src="${poster}" alt="" loading="lazy">` : '<div class="vp-poster blank"></div>'}
     <button class="vp-big" title="Assistir" aria-label="Assistir">${I.play || '▶'}</button>
     <div class="vp-badge">${info}</div>
@@ -271,6 +271,7 @@ const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 2];
 function mountPlayer(box, autoplay = true) {
   if (box._v) return box._v;
   const src = box.dataset.src;
+  box.dataset.live = 'vp:' + src;   // tocando: não é destruído quando a conversa é redesenhada
   box.classList.add('on');
   box.insertAdjacentHTML('beforeend', `
     <video playsinline preload="metadata" src="${src}"></video>

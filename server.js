@@ -629,6 +629,110 @@ app.get('/baixar/pc', async (req, res) => {
   if (!d) return res.status(404).send('O app para PC ainda não foi publicado neste servidor.');
   res.redirect(302, '/desktop/' + encodeURIComponent(d.file));
 });
+// ---------------------------------------------------------------------
+// Prévia de links (título, descrição e imagem da página), como no Discord.
+// O servidor busca a página no lugar do usuário, então é fechado: só http/https,
+// nunca endereços internos (rede local, o próprio servidor), tamanho e tempo limitados.
+// ---------------------------------------------------------------------
+const dns = require('dns');
+const netMod = require('net');
+const UNFURL_PRIVATE_OK = process.env.UNFURL_ALLOW_PRIVATE === '1';   // só para testes locais
+function privateIp(ip) {
+  if (netMod.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 192 && b === 0) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
+  }
+  const v = ip.toLowerCase();
+  if (v.startsWith('::ffff:')) return privateIp(v.slice(7));
+  return v === '::' || v === '::1' || v.startsWith('fc') || v.startsWith('fd') || v.startsWith('fe8') || v.startsWith('fe9') || v.startsWith('fea') || v.startsWith('feb') || v.startsWith('ff') || v.startsWith('64:ff9b');
+}
+// resolve o nome e recusa endereço interno NA HORA de conectar (não dá para trocar o endereço depois)
+const safeLookup = (host, opts, cb) => dns.lookup(host, { ...opts, all: true }, (err, list) => {
+  if (err) return cb(err);
+  const okList = UNFURL_PRIVATE_OK ? list : list.filter(a => !privateIp(a.address));
+  if (!okList.length) return cb(Object.assign(new Error('endereço interno'), { code: 'EPRIVATE' }));
+  opts.all ? cb(null, okList) : cb(null, okList[0].address, okList[0].family);
+});
+function fetchPage(url, max = 400 * 1024, hops = 0) {
+  return new Promise((resolve, reject) => {
+    let u; try { u = new URL(url); } catch { return reject(new Error('link inválido')); }
+    if (!/^https?:$/.test(u.protocol) || u.username || u.password) return reject(new Error('link inválido'));
+    if (netMod.isIP(u.hostname.replace(/^\[|\]$/g, '')) && !UNFURL_PRIVATE_OK && privateIp(u.hostname.replace(/^\[|\]$/g, ''))) return reject(new Error('endereço interno'));
+    const mod = u.protocol === 'https:' ? require('https') : require('http');
+    const req = mod.get(u, { lookup: safeLookup, timeout: 6000, headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NexoBot/1.0; +link-preview)', Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.5', 'Accept-Language': 'pt-BR,pt;q=0.9,en;q=0.6' } }, r => {
+      if (r.statusCode >= 300 && r.statusCode < 400 && r.headers.location) {
+        r.resume();
+        if (hops >= 4) return reject(new Error('redirecionou demais'));
+        let next; try { next = new URL(r.headers.location, u).href; } catch { return reject(new Error('link inválido')); }
+        return fetchPage(next, max, hops + 1).then(resolve, reject);
+      }
+      if (r.statusCode !== 200) { r.resume(); return reject(new Error('status ' + r.statusCode)); }
+      const type = String(r.headers['content-type'] || '').toLowerCase();
+      if (!/^(text\/html|application\/xhtml|application\/json)/.test(type)) { r.destroy(); return resolve({ url: u.href, type, body: '' }); }
+      const chunks = []; let n = 0;
+      r.on('data', c => { n += c.length; chunks.push(c); if (n >= max) r.destroy(); });
+      const end = () => resolve({ url: u.href, type, body: Buffer.concat(chunks).toString('utf8') });
+      r.on('end', end); r.on('close', end); r.on('error', reject);
+    });
+    req.on('timeout', () => req.destroy(new Error('demorou demais')));
+    req.on('error', reject);
+  });
+}
+const NAMED = { aacute: 'á', eacute: 'é', iacute: 'í', oacute: 'ó', uacute: 'ú', agrave: 'à', acirc: 'â', ecirc: 'ê', ocirc: 'ô', atilde: 'ã', otilde: 'õ', ccedil: 'ç', uuml: 'ü', ntilde: 'ñ',
+  Aacute: 'Á', Eacute: 'É', Iacute: 'Í', Oacute: 'Ó', Uacute: 'Ú', Agrave: 'À', Acirc: 'Â', Ecirc: 'Ê', Ocirc: 'Ô', Atilde: 'Ã', Otilde: 'Õ', Ccedil: 'Ç',
+  ndash: '–', mdash: '—', hellip: '…', laquo: '«', raquo: '»', ldquo: '“', rdquo: '”', lsquo: '‘', rsquo: '’', ordf: 'ª', ordm: 'º', deg: '°', copy: '©', reg: '®', trade: '™', middot: '·', bull: '•' };
+const unHtml = t => String(t || '').replace(/&([a-zA-Z]{2,7});/g, (all, n) => NAMED[n] || all).replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16))).replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(+d))
+  .replace(/&quot;/g, '"').replace(/&apos;|&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim();
+function metaOf(html, names) {
+  for (const n of names) {
+    const re1 = new RegExp(`<meta[^>]+(?:property|name)=["']${n}["'][^>]*?content=["']([^"']*)["']`, 'i');
+    const re2 = new RegExp(`<meta[^>]+content=["']([^"']*)["'][^>]*?(?:property|name)=["']${n}["']`, 'i');
+    const m = re1.exec(html) || re2.exec(html);
+    if (m && m[1].trim()) return unHtml(m[1]);
+  }
+  return '';
+}
+const unfurlCache = new Map();   // url → { at, data }
+const unfurlHits = new Map();    // usuário → [quando…]
+async function unfurl(url) {
+  const hit = unfurlCache.get(url);
+  if (hit && Date.now() - hit.at < (hit.data ? 24 : 1) * 3600e3) return hit.data;
+  let data = null;
+  try {
+    const u = new URL(url);
+    const yt = /(^|\.)(youtube\.com|youtu\.be)$/.test(u.hostname);
+    if (yt) {
+      const r = await fetchPage('https://www.youtube.com/oembed?format=json&url=' + encodeURIComponent(url), 64 * 1024);
+      const j = JSON.parse(r.body);
+      data = { url, site: 'YouTube', title: String(j.title || '').slice(0, 200), desc: String(j.author_name || '').slice(0, 120), image: '' };
+    } else {
+      const r = await fetchPage(url);
+      const html = r.body.slice(0, 400 * 1024);
+      const title = metaOf(html, ['og:title', 'twitter:title']) || unHtml((/<title[^>]*>([^<]{1,300})<\/title>/i.exec(html) || [])[1]);
+      if (title) {
+        let image = metaOf(html, ['og:image:secure_url', 'og:image', 'twitter:image', 'twitter:image:src']);
+        try { image = image ? new URL(image, r.url).href : ''; } catch { image = ''; }
+        if (!/^https:\/\//i.test(image)) image = '';   // imagem http não abre em página https
+        data = { url, site: (metaOf(html, ['og:site_name']) || new URL(r.url).hostname.replace(/^www\./, '')).slice(0, 60), title: title.slice(0, 200),
+          desc: metaOf(html, ['og:description', 'twitter:description', 'description']).slice(0, 300), image: image.slice(0, 600) };
+      }
+    }
+  } catch (e) { data = null; }
+  unfurlCache.set(url, { at: Date.now(), data });
+  if (unfurlCache.size > 800) for (const k of [...unfurlCache.keys()].slice(0, 200)) unfurlCache.delete(k);
+  return data;
+}
+app.get('/api/unfurl', async (req, res) => {
+  const u = reqUser(req);
+  if (!u) return res.status(401).json({ error: 'Entre na sua conta.' });
+  const url = String(req.query.url || '');
+  if (url.length > 600 || !/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Link inválido.' });
+  const now = Date.now(), hits = (unfurlHits.get(u.id) || []).filter(t => now - t < 60e3);
+  if (!unfurlCache.has(url)) { if (hits.length >= 40) return res.status(429).json({ error: 'Muitos links de uma vez.' }); hits.push(now); unfurlHits.set(u.id, hits); }
+  res.set('Cache-Control', 'private, max-age=3600');
+  res.json({ preview: await unfurl(url) });
+});
+
 app.get('/api/config', async (req, res) => {
   const turn = await turnServers();
   res.json({ iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }, ...turn], turn: turn.length > 0,
