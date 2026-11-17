@@ -427,7 +427,37 @@ app.use((req, res, next) => {
   next();
 });
 app.use(express.json({ limit: '50kb' }));
-app.use(express.static(path.join(__dirname, 'public'), { extensions: ['html'] }));
+// Arquivos de texto do app (js, css, html) saem comprimidos: ~4x menores, abre mais rápido no 4G
+const zlib = require('zlib');
+const PUB = path.join(__dirname, 'public');
+const ZTYPES = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.svg': 'image/svg+xml', '.json': 'application/json; charset=utf-8', '.webmanifest': 'application/manifest+json' };
+const zcache = new Map();
+app.use((req, res, next) => {
+  if (req.method !== 'GET' && req.method !== 'HEAD') return next();
+  let rel; try { rel = decodeURIComponent(req.path); } catch { return next(); }
+  if (rel === '/') rel = '/index.html';
+  const ext = path.extname(rel), type = ZTYPES[ext];
+  const ae = String(req.headers['accept-encoding'] || '');
+  const enc = /\bbr\b/.test(ae) ? 'br' : /\bgzip\b/.test(ae) ? 'gzip' : null;
+  if (!type || !enc || rel.includes('..') || rel.startsWith('/api/')) return next();
+  const file = path.join(PUB, rel);
+  if (!file.startsWith(PUB + path.sep)) return next();
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile() || st.size < 1024 || st.size > 3e6) return next();
+    const key = file + '|' + enc, tag = `W/"${st.size.toString(16)}-${Math.round(st.mtimeMs).toString(16)}-${enc}"`;
+    res.set('Vary', 'Accept-Encoding'); res.set('ETag', tag); res.set('Cache-Control', 'public, max-age=0');
+    if (req.headers['if-none-match'] === tag) return res.status(304).end();
+    const send = buf => { res.set('Content-Type', type); res.set('Content-Encoding', enc); res.set('Content-Length', String(buf.length)); req.method === 'HEAD' ? res.end() : res.end(buf); };
+    const hit = zcache.get(key);
+    if (hit && hit.tag === tag) return send(hit.buf);
+    fs.readFile(file, (e2, raw) => {
+      if (e2) return next();
+      const done = (e3, buf) => { if (e3) return next(); zcache.set(key, { tag, buf }); send(buf); };
+      if (enc === 'br') zlib.brotliCompress(raw, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 9 } }, done); else zlib.gzip(raw, { level: 9 }, done);
+    });
+  });
+});
+app.use(express.static(PUB, { extensions: ['html'] }));
 
 // Limite simples contra tentativas de senha em massa
 const attempts = new Map();
@@ -902,7 +932,8 @@ function createServer() {
   return http.createServer(app);
 }
 const server = createServer();
-const io = new Server(server, { maxHttpBufferSize: 1e6 });
+const sentNonces = new Map();   // usuário:código → quando (evita mensagem duplicada ao reenviar)
+const io = new Server(server, { maxHttpBufferSize: 1e6, pingInterval: 12000, pingTimeout: 10000 });
 
 // ------------------------------------------------------------------
 // Estado em memoria das salas de voz
@@ -1943,7 +1974,13 @@ io.on('connection', socket => {
 
   let lastMsgs = [];
   let lastTyping = 0;
-  socket.on('message:send', ({ channelId, text, replyTo, att } = {}, cb) => {
+  socket.on('message:send', ({ channelId, text, replyTo, att, nonce } = {}, cb) => {
+    if (typeof nonce === 'string' && nonce.length <= 40) {
+      const k = u.id + ':' + nonce;
+      if (sentNonces.has(k)) return reply(cb, { ok: true, dup: true });
+      const _cb = cb;
+      cb = r => { if (r && !r.error) { sentNonces.set(k, Date.now()); if (sentNonces.size > 5000) for (const [x, t] of sentNonces) { if (Date.now() - t > 15 * 60e3) sentNonces.delete(x); } } return typeof _cb === 'function' && _cb(r); };
+    }
     const ctx = channelCtx(channelId, u.id);
     if (!ctx || (ctx.c && ctx.c.type !== 'text')) return reply(cb, { error: 'Canal não encontrado.' });
     text = String(text || '').trim();

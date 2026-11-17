@@ -282,10 +282,11 @@ async function start() {
 
 function connect() {
   S.socket?.disconnect();
-  const sock = io({ auth: { token: S.token }, transports: ['websocket', 'polling'] });
+  const sock = io({ auth: { token: S.token }, transports: ['websocket', 'polling'], reconnectionDelay: 600, reconnectionDelayMax: 5000, randomizationFactor: 0.3, timeout: 12000 });
   S.socket = sock;
 
-  sock.on('connect_error', e => { if (e.message === 'auth') logout(); });
+  sock.on('connect_error', e => { if (e.message === 'auth') logout(); else window.connState?.('down'); });
+  sock.on('connect', () => window.connState?.('up'));
 
   sock.on('init', d => {
     // saiu versão nova do Nexo: atualiza (se estiver em chamada, espera sair)
@@ -306,11 +307,19 @@ function connect() {
     if (S.gid === '@me' && !S.dms.length) S.gid = S.groups[0]?.id || '@me';
     if (S.gid !== '@me' && !group(S.gid)) S.gid = S.groups[0]?.id || (S.dms.length ? '@me' : null);
     // recarrega historico apos reconectar
+    const keepCid = S.cid, keepMsgs = S.cid && S.msgs[S.cid], keepMore = S.cid && S.more[S.cid];
     S.msgs = {};
     S.more = {};
     renderAll();
-    if (S.view !== 'voice' || !call.channelId) openDefaultChannel();
+    if (S.view === 'friends' && S.gid === '@me') renderFriends();
+    else if (S.view !== 'voice' || !call.channelId) {
+      // mantém na tela o que já estava carregado e troca quando o histórico novo chegar
+      const stay = keepCid && keepMsgs && S.view === 'chat' && (isDmChannel(keepCid) ? true : !!findChannel(keepCid));
+      if (stay) { S.msgs[keepCid] = keepMsgs; S.more[keepCid] = keepMore; refreshHistory(keepCid); }
+      else openDefaultChannel();
+    }
     else if (S.cid) loadHistory(S.cid);
+    window.flushOutbox?.();
     if (S.pendingInvite) { const inv = S.pendingInvite; S.pendingInvite = null; joinGroup(inv); }
     if (call.rejoin) rejoinCall();
   });
@@ -476,8 +485,8 @@ function connect() {
       for (const sid of [...call.peers.keys()]) removePeer(sid);
       call.mySid = null;
       renderTiles();
-      toast('Conexão caiu. Reconectando à chamada…', 4000);
-    } else toast('Reconectando…');
+    }
+    window.connState ? window.connState('down') : toast('Reconectando…');
   });
 
   sock.on('voice:peer-joined', p => { if (call.channelId) { SFX.stop('back'); addPeer(p); playJoinSound(true, true); } });
@@ -660,6 +669,12 @@ async function loadHistory(cid) {
   if (r.messages) { S.msgs[cid] = r.messages; S.more[cid] = !!r.hasMore; if (S.cid === cid) renderMessages(); }
 }
 
+// busca o histórico de novo sem apagar o que está na tela (usado ao reconectar)
+async function refreshHistory(cid) {
+  const r = await emit('channel:history', { channelId: cid });
+  if (r.messages) { S.msgs[cid] = r.messages; S.more[cid] = !!r.hasMore; if (S.cid === cid) renderMessages('keep'); }
+}
+
 function openFriends(tab) {
   if (tab) friendTab = tab;
   S.gid = '@me'; S.dmPeer = null; S.cid = null;
@@ -702,9 +717,12 @@ function renderFriends() {
     el.innerHTML = tabHtml() + (f.friends.length
       ? (on.length ? `<div class="sec">Online <span class="cnt">${on.length}</span></div>` + on.map(row).join('') : '')
         + (off.length ? `<div class="sec">Offline <span class="cnt">${off.length}</span></div>` + off.map(row).join('') : '')
-      : `<div class="set-empty"><b>Nenhum amigo ainda</b><span>Use a aba "Adicionar amigo" para chamar alguém.</span></div>`);
+      : `<div class="set-empty home-empty"><b>Nenhum amigo ainda</b><span>Adicione alguém pelo nome de usuário, ou crie um grupo e mande o convite.</span>
+          <div class="row"><button class="btn primary" id="he-add">Adicionar amigo</button><button class="btn" id="he-group">Criar grupo</button></div></div>`);
   }
   el.querySelectorAll('.ftab').forEach(b => b.onclick = () => { friendTab = b.dataset.t; renderFriends(); });
+  el.querySelector('#he-add')?.addEventListener('click', () => { friendTab = 'add'; renderFriends(); el.querySelector('#fa-q')?.focus(); });
+  el.querySelector('#he-group')?.addEventListener('click', groupModal);
   el.querySelectorAll('[data-ok]').forEach(b => b.onclick = () => emit('friend:accept', { userId: b.dataset.ok }));
   el.querySelectorAll('[data-no]').forEach(b => b.onclick = () => emit('friend:remove', { userId: b.dataset.no }));
   el.querySelectorAll('[data-dm]').forEach(b => b.onclick = () => openDM(b.dataset.dm));
@@ -907,11 +925,12 @@ function renderDMs(head, list) {
   head.innerHTML = `<span class="name">Mensagens diretas</span><button class="icon-btn" id="dm-new" title="Nova conversa">${I.plus}</button>`;
   head.querySelector('#dm-new').onclick = findUserModal;
   const nIn = S.friends.in.length;
-  const top = `<button class="side-btn ${S.view === 'friends' ? 'active' : ''}" id="dm-friends">${I.users}Amigos${nIn ? `<span class="badge">${nIn}</span>` : ''}</button>`;
+  const top = `<button class="side-find" id="qs-open" type="button">${I.search}<span>Ir para uma conversa</span><kbd>Ctrl K</kbd></button><button class="side-btn ${S.view === 'friends' ? 'active' : ''}" id="dm-friends">${I.users}Amigos${nIn ? `<span class="badge">${nIn}</span>` : ''}</button>`;
   const dms = [...S.dms].sort((a, b) => (b.last?.ts || 0) - (a.last?.ts || 0));
   if (!dms.length) {
-    list.innerHTML = top + `<p class="muted" style="padding:10px">Nenhuma conversa ainda. Adicione um amigo ou clique no perfil de alguém e em "Enviar mensagem".</p>`;
-    list.querySelector('#dm-friends').onclick = openFriends;
+    list.innerHTML = top + `<p class="muted" style="padding:10px">Nenhuma conversa ainda. Adicione um amigo para começar.</p>`;
+    list.querySelector('#dm-friends').onclick = () => openFriends();
+    list.querySelector('#qs-open').onclick = () => window.openQuick?.();
     return;
   }
   list.innerHTML = top + `<div class="sec">Conversas</div>` + dms.map(d => {
@@ -921,7 +940,8 @@ function renderDMs(head, list) {
       ${avatar(d.user, 'sm')}<span class="col"><span class="n">${esc(d.user.name)}</span>${prev ? `<span class="p ${d.inCall ? 'incall' : ''}">${esc(prev)}</span>` : ''}</span>${unreadOf(cid) ? `<span class="cnt">${badgeTxt(unreadOf(cid))}</span>` : ''}
       <span class="icon-btn x" data-close-dm="${esc(d.user.id)}" title="Fechar conversa">${I.x}</span></button>`;
   }).join('');
-  list.querySelector('#dm-friends').onclick = openFriends;
+  list.querySelector('#dm-friends').onclick = () => openFriends();
+  list.querySelector('#qs-open').onclick = () => window.openQuick?.();
   list.querySelectorAll('[data-dm]').forEach(b => b.onclick = () => openDM(b.dataset.dm));
   list.querySelectorAll('[data-close-dm]').forEach(b => b.onclick = async e => {
     e.stopPropagation();
@@ -1251,7 +1271,7 @@ function renderMessages(mode) {
        <p class="muted">@${esc(peer.username)} — este é o começo da sua conversa privada.</p></div>`
     : `<div class="welcome"><div class="big-ic">${I.hash}</div><h2>Bem-vindo a #${esc(f?.c.name || '')}!</h2>
        <p class="muted">Este é o começo do canal #${esc(f?.c.name || '')}.</p></div>`;
-  if (!msgs) html += `<p class="muted" style="padding:0 16px">Carregando…</p>`;
+  if (!msgs) html += '<div class="skel" aria-label="Carregando mensagens">' + [62, 38, 74, 46, 55].map(w => `<div class="skel-row"><i></i><div><b></b><span style="width:${w}%"></span></div></div>`).join('') + '</div>';
   else {
     let prev = null;
     for (const m of msgs) {
@@ -1260,7 +1280,9 @@ function renderMessages(mode) {
       prev = m;
     }
   }
+  html += typeof outboxHtml === 'function' ? outboxHtml(S.cid) : '';
   box.innerHTML = html;
+  window.afterRenderMessages?.(mode);
   if (mode === 'keep') box.scrollTop = nearBottom ? box.scrollHeight : prevTop;
   else if (!mode || nearBottom || msgs?.at(-1)?.userId === S.user?.id) box.scrollTop = box.scrollHeight;
 }
@@ -1521,7 +1543,12 @@ async function sendMessage() {
       if (r.error) break;
     }
     atts.forEach(a => a.preview && URL.revokeObjectURL(a.preview));
-  } else r = await emit('message:send', { channelId: S.cid, text, replyTo: replyTo?.id });
+  } else {
+    const item = { cid: S.cid, text, replyTo: replyTo?.id || null, nonce: Date.now().toString(36) + Math.random().toString(36).slice(2, 10), ts: Date.now() };
+    if (!S.socket?.connected && typeof queueOut === 'function') { queueOut(item); return; }
+    r = await emit('message:send', { channelId: item.cid, text, replyTo: item.replyTo, nonce: item.nonce });
+    if (r.error && /Sem conexão|não respondeu/.test(r.error) && typeof queueOut === 'function') { queueOut(item); return; }
+  }
   if (fc && !editing) {
     const slow = chCfg(fc).slow && !canCh(fc, 'manageMessages') && !canCh(fc, 'manageChannels') ? chCfg(fc).slow : 0;
     if (r.slow) slowUntil[S.cid] = Date.now() + r.slow * 1000;
@@ -3108,6 +3135,7 @@ async function installApp() {
   // Botao "voltar" do Android: fecha o que estiver aberto antes de minimizar o app
   window.__nexoLeaveCall = () => { if (call.channelId) leaveCall(); };
   window.__nexoBack = () => {
+    if ($('#qs') && !$('#qs').classList.contains('hidden')) { closeQuick(); return true; }
     if (!$('#lightbox').classList.contains('hidden')) { $('#lightbox').classList.add('hidden'); return true; }
     if (!ctx.classList.contains('hidden')) { closeCtx(); return true; }
     if (!$('#modal').classList.contains('hidden')) { closeModal(); return true; }
